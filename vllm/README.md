@@ -14,6 +14,16 @@
 | v0.24.0 | [v0.24.0.md](v0.24.0.md) | ~576 | 70 |
 | v0.25.0 | [v0.25.0.md](v0.25.0.md) | ~576 | 75 |
 
+## 架构演进 Q&A
+
+围绕 PagedAttention 退役与 MRv2 接管的几个核心问题，详见 [FAQ.md](FAQ.md)：
+
+- **Q1**：v0.25.0 到底删没删 PagedAttention？（删了；删的是原始 CUDA kernel，源码逐版本查证）
+- **Q2**：删的只是 kernel，PagedAttention 的"思想"删了吗？（没删，分页管理 KV Cache 的思想由 MRv2 继承）
+- **Q3**：MRv2 是什么？全称？跟 PagedAttention 什么关系？（Model Runner V2，新一代推理执行引擎，对应代码里的 V1 engine）
+- **Q4**：MRv2 什么时候加的？（v0.7.0 引入，v0.24.0 成默认，v0.25.0 唯一路径）
+- **Q5**：MRv2 全面接管对使用有什么影响？（多数用户无感；引用 PagedAttention 内部 API / 自定义 attention 后端需迁移）
+
 ## 各版头条亮点
 
 ### v0.21.0（相对 0.20.0）
@@ -42,7 +52,7 @@
 
 ### v0.25.0（相对 0.24.0）⭐ 架构级里程碑
 - **PagedAttention 正式退役** — 删除 2023 年让 vLLM 一战成名的原始 PagedAttention CUDA kernel（commit `d715b3aa1`，删除约 1472 行：`paged_attention_v1.cu`/`v2.cu` + `attention_kernels.cuh`），由 MRv2 全面接管
-- **MRv2 成为所有稠密模型默认执行路径** — 零配置启用，动态推测解码兼容完整 CUDA Graphs
+- **MRv2 成为所有稠密模型默认执行路径** — 零配置启用，动态推测解码兼容完整 CUDA Graphs。MRv2（Model Runner V2，对应代码里的 V1 engine）从 v0.7.0 引入，经约 18 个版本打磨，v0.24.0 成默认、v0.25.0 成唯一路径。详见 [FAQ.md](FAQ.md)
 - **投机解码异构词表通用方案（TLI）** — 打破 Draft/Target 必须同词表的限制
 - **Transformers 后端性能追平原生 vLLM** — 450+ HF 架构无需移植即可获 fused kernels + torch.compile + CUDA graphs 加速
 
