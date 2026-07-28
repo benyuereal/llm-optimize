@@ -34,36 +34,20 @@
 - **MoE 全面迁移到 oracle 架构** — MoE 路由的 oracle 架构
 - **DSV4 栈打磨 + TOKENSPEED_MLA/TRTLLM kernel**
 
-### v0.24.0（相对 0.23.0）⭐ 与 MTP 部署最相关
+### v0.24.0（相对 0.23.0）
 - **投机解码全面成熟** — MTP/EAGLE/DFlash/Dynamic SD + thinking budget 叠加，稳定性与兼容性大幅提升
 - **MLA 注意力后端重构 + GLM-5 全栈适配** — GLM 系列模型原生高性能支持
 - **P/D 分离 + KV 传输生态成熟** — Mooncake/DeepEP v2/NIXL/HMA/cross-layer
 - **NVFP4/MXFP4 量化全链路深化**
 
-### v0.25.0（相对 0.24.0）
-- **投机解码大爆发** — 多种投机解码方案进一步完善
-- **GLM-5/DSV3.2/V4 一体化高性能实现**
-- **Attention backend 全面扩展**
-- **分布式通信与可插拔 sleep-mode**
-
-## 与本仓库场景的关联
-
-本仓库的 [proxy/](../proxy/) 解决的是 **vLLM 开启 MTP（`num_speculative_tokens: 2`）后，glm-5.2 生成 tool call 参数时结尾漂移（多吐 `{}`）导致 Claude Code 报 `Invalid tool parameters`** 的问题。
-
-从这次盘点看，**vLLM 在 0.22→0.24 期间对 MTP/投机解码做了大量成熟化工作**：
-
-- 0.22.0：投机解码与 thinking budget 兼容（结构化输出场景的稳定性改善）
-- 0.23.0：DSA MTP index share、KV-Cache 架构重构
-- 0.24.0：**投机解码全面成熟**（MTP/EAGLE/DFlash/Dynamic SD + thinking budget 叠加）+ **GLM-5 全栈适配**
-
-> **建议**：当前部署用的是 vLLM 0.18.1（HCU 定制版）。如果条件允许，升级到 v0.24.0+ 可能从根本上改善 MTP 在结构化输出（tool call）场景的漂移问题——这正是我们用转发修复代理在中间层兜底的根因。升级前需确认 HCU 定制版的适配进度。
-
-## 环境信息
-
-- 盘点基于的仓库：vLLM 官方仓库（本地 clone，tag 至 v0.26.1rc0）
-- 当前部署版本：vLLM 0.18.1（HCU 定制版）
-- 关注模型：glm-5.2（MTP 投机解码部署）
+### v0.25.0（相对 0.24.0）⭐ 架构级里程碑
+- **PagedAttention 正式退役** — 删除 2023 年让 vLLM 一战成名的原始 PagedAttention CUDA kernel（commit `d715b3aa1`，删除约 1472 行：`paged_attention_v1.cu`/`v2.cu` + `attention_kernels.cuh`），由 MRv2 全面接管
+- **MRv2 成为所有稠密模型默认执行路径** — 零配置启用，动态推测解码兼容完整 CUDA Graphs
+- **投机解码异构词表通用方案（TLI）** — 打破 Draft/Target 必须同词表的限制
+- **Transformers 后端性能追平原生 vLLM** — 450+ HF 架构无需移植即可获 fused kernels + torch.compile + CUDA graphs 加速
 
 ## 盘点方法
 
 5 个版本段并行分析，每段由独立 agent 提取 commit、按标签筛选、归类总结。详见各版本文档。
+
+> 注：按 commit 标签（`[Feature]/[Perf]/[Core]/...`）自动筛选会遗漏"无标签但重大"的架构级改动（如 v0.25.0 删除 PagedAttention 的 commit 标题是 `Delete PagedAttention` 无标签）。此类条目已手工补正。
