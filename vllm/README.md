@@ -24,7 +24,7 @@
 - **Q1**：v0.25.0 到底删没删 PagedAttention？（删了；删的是原始 CUDA kernel，源码逐版本查证）
 - **Q2**：删的只是 kernel，PagedAttention 的"思想"删了吗？（没删，分页管理 KV Cache 的思想由 MRv2 继承）
 - **Q3**：MRv2 是什么？全称？跟 PagedAttention 什么关系？（Model Runner V2，V1 引擎内部执行器的第二代重写；注意 V1 engine ≠ MRv2，二者层级和时间都不同）
-- **Q4**：MRv2 什么时候加的？（V1 engine v0.7.0 引入；MRv2 从 v0.15/v0.16 起开发，v0.18 已成熟，v0.25.0 删 PagedAttention kernel 时独挑大梁）
+- **Q4**：MRv2 什么时候加的？（V1 engine v0.7.0 引入、v0.8.0 默认开；V0 LLMEngine v0.11.0 被掏空成垫片；MRv2 从 v0.15/v0.16 起开发，v0.18 已成熟，v0.25.0 删 PagedAttention kernel 时独挑大梁。三层概念与完整时间线见 [V1-vs-MRv2.md](V1-vs-MRv2.md)）
 - **Q5**：MRv2 全面接管对使用有什么影响？（多数用户无感；引用 PagedAttention 内部 API / 自定义 attention 后端需迁移）
 
 ## 各版头条亮点
@@ -62,7 +62,7 @@
 
 ### v0.25.0 ⭐ 架构级里程碑 — 换底盘
 - **PagedAttention 正式退役**：删掉 2023 年让 vLLM 一战成名的原始 CUDA kernel（commit `d715b3aa1`，约 1472 行），MRv2 全面接管。思想（分页管 KV Cache）没删，删的是那套老实现
-- **MRv2 成为所有稠密模型唯一默认路径**：从 v0.7.0 孵化、经约 18 个版本，到这版正式独挑大梁。动态投机解码终于兼容完整 CUDA Graphs（以前二选一）
+- **MRv2 成为所有稠密模型唯一默认路径**：V1 engine 自 v0.7.0 起步、v0.8.0 默认开；MRv2（V1 内部执行器重写）自 v0.16.0 起步、v0.18 已成熟，到这版正式独挑大梁。动态投机解码终于兼容完整 CUDA Graphs（以前二选一）。三层概念辨析见 [V1-vs-MRv2.md](V1-vs-MRv2.md)
 - 投机解码打破"草稿模型和主模型必须同词表"的限制（TLI 异构词表方案）
 - Transformers 后端性能追平原生 vLLM——450+ HF 模型无需移植也能享受 fused kernels + CUDA graphs
 - 详见 [FAQ.md](FAQ.md)
