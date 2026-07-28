@@ -65,7 +65,7 @@ Claude Code → 转发修复代理(:4001) → LiteLLM(:4000) → vLLM(:8001, MTP
 | `llm_proxy.py` | **正式版**，混合流式 + 修复。文字实时流，工具参数缓冲修复。默认用这个。 |
 | `llm_proxy_v1.py` | 缓冲版（备用）。收完整个响应再修复返回，更稳但无打字机效果。 |
 | `probe_proxy.py` | 探测版（调试用）。只透传并记录所有 tool_use 到日志，不修复、不重试。用于抓取畸形样本。 |
-| `start.sh` | vLLM 启动脚本参考（含 MTP 配置）。 |
+| `requirements.txt` | Python 依赖（fastapi / uvicorn / httpx）。 |
 
 ## 安装与使用
 

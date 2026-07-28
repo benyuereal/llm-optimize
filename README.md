@@ -23,7 +23,7 @@ llm-optimize/
     ├── llm_proxy.py     # 混合流式 + 修复代理（正式版）
     ├── llm_proxy_v1.py  # 缓冲式修复代理（备用版）
     ├── probe_proxy.py   # 探测版（调试用，抓取畸形样本）
-    └── start.sh         # vLLM 启动脚本参考
+    └── requirements.txt # Python 依赖
 ```
 
 ## 核心问题：MTP 导致工具调用参数结尾漂移
