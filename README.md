@@ -32,22 +32,40 @@ llm-optimize/
 
 开启 MTP（`num_speculative_tokens: 2`）后，Claude Code 约 10% 的工具调用报 `Invalid tool parameters`。关闭 MTP 即恢复正常，但 MTP 的推理加速不可放弃。
 
-### 根因
+### 根因：工具调用参数结尾多出 `{}`
 
-MTP 一次投机预测 2 个 token，在生成 **tool call 参数 JSON** 时，结尾本该是 `"}`，偶发被替换成 `{}`，导致 JSON 字符串未闭合：
+问题的本质是 **tool call 的参数 JSON 结尾多出来一对 `{}`，把本该收尾的 `"}` 顶替掉了**，导致 JSON 字符串未闭合。
+
+一个合法的 tool call 参数长这样（结尾是引号 `"` 闭合字符串 + 大括号 `}` 闭合对象）：
 
 ```
-正常: {"command": "ls", "description": "测试 10"}
-畸形: {"command": "ls", "description": "测试 10{}
+{"command": "ls", "description": "测试 10"}
+                                       ↑ 这两个字符 " } 是收尾
 ```
 
-Claude Code 校验 `json.loads` 报 `Unterminated string` → `Invalid tool parameters`。
+MTP 投机解码一次预测 2 个 token，在生成到这种**需要精确结构的结尾处**时，draft 头偶发性地多吐了一对 `{}`，把收尾的 `"}` 挤掉，变成：
 
-关键诊断结论：
-- LiteLLM 日志全是 `200 OK`（只转发，不校验）。
-- vLLM 也认为生成成功（不知道结尾漂移）。
-- 错误发生在 Claude Code 客户端的本地 schema 校验环节。
-- 漂移是概率性的（~10%），对长参数串更敏感。
+```
+{"command": "ls", "description": "测试 10{}
+                                       ↑ 多了 {}，原本的 " } 没了
+```
+
+把畸形和正常对比，差异只在结尾 3 个字符：
+
+```
+正常: ...测试 10"}      ← 引号 + 大括号，合法闭合
+畸形: ...测试 10{}      ← 多了 {}，引号丢失，字符串未终止
+```
+
+Claude Code 收到后按工具 schema 校验，`json.loads` 报 `Unterminated string starting at ...` → 显示 `Invalid tool parameters`，拒绝执行该工具调用。
+
+**关键诊断结论：**
+- 错误发生在 **Claude Code 客户端的本地 schema 校验**环节，不是网络或服务端。
+- LiteLLM 日志全是 `200 OK`——它只负责转发，不校验参数合法性。
+- vLLM 也认为生成成功——它不知道结尾多吐了 `{}`。
+- 漂移是**概率性**的（约 10%），且对**较长的参数串**更敏感（结尾 token 越靠后，MTP 猜错概率越高）。
+- 漂移形态高度规律：**永远是结尾 `"}` 被 `{}` 取代**，这让它可以被确定性修复。
+- **关闭 MTP 即恢复正常**，但 MTP 的推理加速不可放弃。
 
 ### 解决方案
 

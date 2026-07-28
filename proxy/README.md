@@ -18,24 +18,39 @@ Claude Code → LiteLLM(协议转换) → vLLM(推理, MTP 开启) → glm-5.2
 
 开启 MTP 后，Claude Code 频繁报 `Invalid tool parameters`，约 10% 的工具调用失败。
 
-### 根因
+### 根因：工具调用参数结尾多出 `{}`
 
-MTP 投机解码一次预测多个 token，在生成 **tool call 的参数 JSON** 时，结尾本该是 `"}`（引号闭合 + 大括号闭合），偶发性地被替换/截断成 `{}`，导致 JSON 字符串未闭合。
+问题的本质是：模型生成 tool call 的参数 JSON 时，**结尾多吐了一对 `{}`，把本该收尾的 `"}` 顶替掉了**，导致 JSON 字符串未闭合。
 
-实测抓到的畸形样本：
+合法的 tool call 参数结尾是 引号 `"`（闭合字符串）+ 大括号 `}`（闭合对象）：
+
+```
+{"command": "ls", "description": "测试 10"}
+                                       ↑ " } 是收尾
+```
+
+MTP 投机解码一次预测多个 token，在生成到这种**需要精确结构的结尾处**时，draft 头偶发多吐 `{}`，把收尾的 `"}` 挤掉：
+
+```
+{"command": "ls", "description": "测试 10{}
+                                       ↑ 多了 {}，" 没了
+```
+
+实测抓到的畸形样本（直接从 vLLM 抓的 SSE 流，铁证漂移发生在模型生成阶段）：
 
 ```
 正常: {"command": "ls", "description": "测试 10"}
 畸形: {"command": "ls", "description": "测试 10{}   ← 结尾 "} 变成了 {}
 ```
 
-Claude Code 收到后按 schema 校验，`json.loads` 报 `Unterminated string`，于是显示 `Invalid tool parameters` 并拒绝执行。
+Claude Code 收到后按工具 schema 校验，`json.loads` 报 `Unterminated string starting at: line 1 column N`，于是显示 `Invalid tool parameters` 并拒绝执行。
 
-关键点：
-- LiteLLM 日志全是 `200 OK`（它只转发，不校验参数）。
-- vLLM 也认为生成成功（它不知道结尾漂移了）。
-- 只有 Claude Code 做了 schema 校验，才暴露问题。
-- 漂移是概率性的（约 10%），且对较长的参数串更敏感。
+**关键诊断点：**
+- 错误发生在 **Claude Code 客户端的本地 schema 校验**环节，不是网络或服务端 bug。
+- LiteLLM 日志全是 `200 OK`——它只负责转发，不校验参数合法性。
+- vLLM 也认为生成成功——它不知道结尾多吐了 `{}`。
+- 漂移是**概率性**的（约 10%），且对**较长的参数串**更敏感（结尾 token 越靠后，MTP 猜错概率越高）。
+- 漂移形态高度规律：**永远是结尾 `"}` 被 `{}` 取代**——这让它可以被确定性修复（把结尾 `{}` 改回 `"}`）。
 - **关闭 MTP 即恢复正常**，但 MTP 带来的推理加速不可放弃。
 
 ## 解决方案
