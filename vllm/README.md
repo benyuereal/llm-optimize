@@ -23,8 +23,8 @@
 
 - **Q1**：v0.25.0 到底删没删 PagedAttention？（删了；删的是原始 CUDA kernel，源码逐版本查证）
 - **Q2**：删的只是 kernel，PagedAttention 的"思想"删了吗？（没删，分页管理 KV Cache 的思想由 MRv2 继承）
-- **Q3**：MRv2 是什么？全称？跟 PagedAttention 什么关系？（Model Runner V2，新一代推理执行引擎，对应代码里的 V1 engine）
-- **Q4**：MRv2 什么时候加的？（v0.7.0 引入，v0.24.0 成默认，v0.25.0 唯一路径）
+- **Q3**：MRv2 是什么？全称？跟 PagedAttention 什么关系？（Model Runner V2，V1 引擎内部执行器的第二代重写；注意 V1 engine ≠ MRv2，二者层级和时间都不同）
+- **Q4**：MRv2 什么时候加的？（V1 engine v0.7.0 引入；MRv2 从 v0.15/v0.16 起开发，v0.18 已成熟，v0.25.0 删 PagedAttention kernel 时独挑大梁）
 - **Q5**：MRv2 全面接管对使用有什么影响？（多数用户无感；引用 PagedAttention 内部 API / 自定义 attention 后端需迁移）
 
 ## 各版头条亮点
