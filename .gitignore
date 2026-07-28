@@ -1,0 +1,41 @@
+# 密钥与敏感信息（绝不提交）
+*.pem
+*.key
+id_rsa
+id_ed25519
+id_ed25519.pub
+*.ppk
+.ssh/
+**/.env
+**/.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+
+# 日志与运行时产物
+*.log
+*.out
+/tmp/
+
+# 备份
+*.bak
+*.backup
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude
+.claude/
+
+# 系统
+.DS_Store
+Thumbs.db
