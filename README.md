@@ -61,7 +61,7 @@ Claude Code 校验 `json.loads` 报 `Unterminated string` → `Invalid tool para
 
 ```bash
 # 1. 安装依赖
-pip install fastapi uvicorn httpx sse-starlette
+pip install -r llm-optimize/proxy/requirements.txt
 
 # 2. 启动代理（监听 :4001，上游 LiteLLM :4000）
 nohup python llm-optimize/proxy/llm_proxy.py > /tmp/llm_proxy.out 2>&1 &

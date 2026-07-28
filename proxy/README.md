@@ -72,8 +72,10 @@ Claude Code → 转发修复代理(:4001) → LiteLLM(:4000) → vLLM(:8001, MTP
 ### 依赖
 
 ```bash
-pip install fastapi uvicorn httpx sse-starlette
+pip install -r requirements.txt
 ```
+
+依赖包（见 `requirements.txt`）：`fastapi`、`uvicorn`、`httpx`。
 
 ### 启动代理
 
