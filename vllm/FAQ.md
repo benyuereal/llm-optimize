@@ -54,7 +54,7 @@ PagedAttention 思想：把 KV Cache 切成固定大小的"页"(block)
 
 ### 全称
 
-**MRv2 = Model Runner V2**，是 V1 引擎内部 `gpu_model_runner`（GPU 执行器）的**第二代重写**，首个 commit 为 `#25266 GPU Model Runner V2`。
+**MRv2 = Model Runner V2**，是 V1 引擎内部 GPU 执行器的**第二代重写**，首个 commit 为 `#25266 GPU Model Runner V2`。
 
 ### ⚠️ 最容易搞混的点：vLLM 有三层概念，不是一个东西
 
@@ -64,11 +64,11 @@ PagedAttention 思想：把 KV Cache 切成固定大小的"页"(block)
 |---|---|---|---|---|
 | 引擎层 | **V0 engine**（旧）| `vllm/engine/`、`vllm/core/` | 早期 | 老架构，`LLMEngine` 在 v0.11.0 被掏空成重导出 V1 的垫片 |
 | 引擎层 | **V1 engine**（新）| `vllm/v1/` | **v0.7.0**（`#9289`）| 新引擎架构，v0.8.0 默认开 |
-| 执行器层 | **MRv2 / Model Runner V2** | `vllm/v1/worker/gpu_model_runner.py` 重写 | **v0.16.0**（`#25266`，2025-11-21）| V1 引擎**内部**执行器的第二次重写 |
+| 执行器层 | **MRv2 / Model Runner V2** | `vllm/v1/worker/gpu/`（新目录）| **v0.16.0**（`#25266`，2025-11-21）| V1 引擎**内部**执行器的第二代重写，与老 `gpu_model_runner.py` 并存 |
 
 **关键区别**：
-- **V1 engine ≠ MRv2**。V1 engine 是 v0.7.0 起的引擎层换代；MRv2 是 v0.16.0 起在 V1 引擎**内部**对 `gpu_model_runner` 的**又一次重写**。MRv2 比 V1 engine 晚了约 9 个版本。
-- **MRv2 没有 `VLLM_USE_MRV2` 这样的用户开关**。它是引擎内部组件，靠**渐进式能力补齐**（逐个覆盖稠密/MoE/多模态/投机解码）来"接管"，而非某版本一个 flag 翻转。
+- **V1 engine ≠ MRv2**。V1 engine 是 v0.7.0 起的引擎层换代；MRv2 是 v0.16.0 起在 V1 引擎**内部**对 GPU 执行器的**又一次重写**。MRv2 比 V1 engine 晚了约 9 个版本。
+- **MRv2 有用户开关 `VLLM_USE_V2_MODEL_RUNNER`**（v0.24.0 起）。未设时按场景**条件启用**：PCP>1、dspark 投机解码、DFlash 混合草稿、diffusion 模型等**强制走 V2**；默认 V2 模型列表内 + 有 Triton + 不在不支持特性黑名单上的模型才走 V2，否则回退老执行器。所以 MRv2 是"渐进式接管"，不是某版本一刀切全局默认。
 - 新闻里"MRv2 全面接管"≈ V1 engine + 它的 Model Runner V2 成为唯一路径，是**两层换代的叠加结果**。
 
 ### 它是干嘛的
@@ -94,6 +94,105 @@ MRv2 是 vLLM 推理流程的"底盘"执行器：请求怎么排队、KV Cache �
 - 跟 CUDA Graphs、投机解码、多模态深度整合
 
 是**"思想留存、实现换代"**。新闻里的比喻：*"你不再用 VHS 录像带，但'录制回放'的概念永远存在。PagedAttention 退役，但它开创的显存管理范式活在每一行新代码里。"*
+
+### 🔍 源码实证（当前仓库 HEAD）
+
+> 以下代码均为当前仓库真实文件内容，作为上述结论的实证。当前 HEAD：`90245f419`（`v0.26.1rc0` 之后 21 个 commit，约 v0.26.1 开发中）。
+
+**实证 1：V0 已成垫片 —— `vllm/engine/llm_engine.py` 全文（7 行）**
+
+```python
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+
+from vllm.v1.engine.llm_engine import LLMEngine as V1LLMEngine
+
+LLMEngine = V1LLMEngine  # type: ignore
+"""The `LLMEngine` class is an alias of [vllm.v1.engine.llm_engine.LLMEngine][]."""
+```
+
+`vllm/engine/async_llm_engine.py` 同理（6 行），`AsyncLLMEngine = AsyncLLM`（重导出 `vllm.v1.engine.async_llm`）。V0 的引擎类早已被 V1 替换，文件名仅为兼容老 import 保留。
+
+**实证 2：V1 引擎独立目录 —— `vllm/v1/` 结构**
+
+```
+vllm/v1/
+├── attention/          # attention 后端（含 mla/ 子目录、20+ backend）
+├── core/               # 调度 + KV 管理（sched/、block_pool.py、kv_cache_manager.py）
+├── engine/             # 引擎核心（core.py、async_llm.py、llm_engine.py）
+├── executor/           # 执行器（uniproc/multiproc）
+├── kv_offload/         # KV 卸载
+├── spec_decode/        # 投机解码内建（eagle/dflash/gemma4/ngram/...）
+├── structured_output/  # 结构化输出
+├── worker/             # ← 执行器层在这里
+│   ├── gpu_model_runner.py   # 老 GPU 执行器（GPUModelRunner, 7902 行）
+│   ├── gpu/                  # ← MRv2 新目录（见实证 3）
+│   ├── cpu_model_runner.py
+│   └── ...
+├── kv_cache_interface.py
+└── ...
+```
+
+**实证 3：MRv2 是独立新目录 —— `vllm/v1/worker/gpu/README.md` 全文**
+
+```
+# [Experimental] Model Runner V2
+
+This directory contains the new model runner which is under active development.
+Ping [Woosuk Kwon](https://github.com/WoosukKwon) for any changes.
+```
+
+该目录由 `#25266 GPU Model Runner V2` 创建，核心文件 `gpu/model_runner.py`（`class GPUModelRunner`，约 73KB），与老执行器 `vllm/v1/worker/gpu_model_runner.py`（`class GPUModelRunner`，7902 行）**并存**。两个同名类、两条执行路径同时存在，正是"渐进式接管"的代码形态。
+
+**实证 4：MRv2 有开关 —— `vllm/envs.py`**
+
+```python
+VLLM_USE_V2_MODEL_RUNNER: bool | None = None   # 第 275 行
+...
+# Flag to control the v2 model runner. If unset, use config defaults.
+"VLLM_USE_V2_MODEL_RUNNER": lambda: maybe_convert_bool(
+    os.getenv("VLLM_USE_V2_MODEL_RUNNER", None)
+),
+```
+
+**实证 5：MRv2 启用判定 —— `vllm/config/vllm.py` `use_v2_model_runner`**
+
+```python
+def use_v2_model_runner(self) -> bool:
+    use_v2_model_runner = envs.VLLM_USE_V2_MODEL_RUNNER
+    if use_v2_model_runner is not None:
+        return use_v2_model_runner              # 环境变量优先
+
+    # PCP runtime 仅 V2 实现 → 强制 V2
+    if self.parallel_config.prefill_context_parallel_size > 1:
+        return True
+    # DSpark 投机解码仅 V2 实现 → 强制 V2
+    if (self.speculative_config is not None
+            and self.speculative_config.method == "dspark"):
+        return True
+    # DFlash 混合草稿需多 KV 组（仅 V2）→ 强制 V2
+    if self._dflash_needs_multi_kv_group():
+        return True
+    # diffusion 模型 → 强制 V2
+    if self.model_config is not None and self.model_config.is_diffusion:
+        return True
+
+    # 其余：仅"默认 V2 模型列表"内的模型 + 有 Triton + 不在支持特性黑名单 → 才走 V2
+    if not self._is_default_v2_model_runner_model():
+        return False
+    if not HAS_TRITON:
+        logger.warning_once("Model Runner V2 requires Triton; using the V1 ...")
+        return False
+    unsupported = self._get_v2_model_runner_unsupported_features()
+    if unsupported:
+        logger.warning_once("Model Runner V2 does not yet support %s; ...", ...)
+        return False
+    return True
+```
+
+读这段代码即可确认：MRv2 不是"全局默认开/关"，而是**按模型与场景条件启用**，不支持时回退老执行器并打 warning。这正是"渐进式接管"的机制——也解释了为何没有一个干净的"MRv2 默认版本"断点。
+
+> 三层概念与完整时间线的更多细节见 [V1-vs-MRv2.md](V1-vs-MRv2.md)。
 
 ---
 

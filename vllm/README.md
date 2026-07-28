@@ -3,6 +3,8 @@
 本目录盘点 vLLM 从 v0.19.0 到 v0.26.0 共 8 个 minor 版本的重大更新，聚焦新特性、性能、核心架构、模型支持、Kernel/Attention/量化/MoE 等方向，已过滤 Bugfix/CI/Docs 等日常维护提交。每版文档含"本版导读"（通俗定调）+ 分类详情（带 commit 号核实）+ 升级建议。
 
 > 数据来源：vLLM 官方仓库 git tag 间的 commit，按 `[Feature]/[Perf]/[Core]/[Model]/[Kernel]/[Attention]/[Quantization]/[MoE]/[SpecDecode]/[MTP]` 等标签筛选，每版约 67-95 条重大更新。
+>
+> 🔍 **源码实证**：FAQ.md Q3 附当前仓库 HEAD（`90245f419`，约 v0.26.1 开发中）的真实代码片段，实证 V0 垫片（`vllm/engine/llm_engine.py` 7 行重导出 V1）、V1 独立目录（`vllm/v1/`）、MRv2 新目录（`vllm/v1/worker/gpu/`，README 自述 "Model Runner V2"）、MRv2 开关（`VLLM_USE_V2_MODEL_RUNNER`）与启用判定逻辑。
 
 ## 版本索引
 
@@ -24,7 +26,7 @@
 - **Q1**：v0.25.0 到底删没删 PagedAttention？（删了；删的是原始 CUDA kernel，源码逐版本查证）
 - **Q2**：删的只是 kernel，PagedAttention 的"思想"删了吗？（没删，分页管理 KV Cache 的思想由 MRv2 继承）
 - **Q3**：MRv2 是什么？全称？跟 PagedAttention 什么关系？（Model Runner V2，V1 引擎内部执行器的第二代重写；注意 V1 engine ≠ MRv2，二者层级和时间都不同）
-- **Q4**：MRv2 什么时候加的？（V1 engine v0.7.0 引入、v0.8.0 默认开；V0 LLMEngine v0.11.0 被掏空成垫片；MRv2 从 v0.15/v0.16 起开发，v0.18 已成熟，v0.25.0 删 PagedAttention kernel 时独挑大梁。三层概念与完整时间线见 [V1-vs-MRv2.md](V1-vs-MRv2.md)）
+- **Q4**：MRv2 什么时候加的？（V1 engine v0.7.0 引入、v0.8.0 默认开；V0 LLMEngine v0.11.0 被掏空成垫片；MRv2 从 v0.15/v0.16 起开发，v0.18 已成熟；有开关 `VLLM_USE_V2_MODEL_RUNNER`，按模型/场景条件启用而非全局默认。三层概念与完整时间线见 [V1-vs-MRv2.md](V1-vs-MRv2.md)）
 - **Q5**：MRv2 全面接管对使用有什么影响？（多数用户无感；引用 PagedAttention 内部 API / 自定义 attention 后端需迁移）
 
 ## 各版头条亮点

@@ -14,7 +14,7 @@ vLLM 的引擎换代分**三层**，别混成一个：
 |---|---|---|---|
 | 引擎层（旧） | **V0 engine** | 早期 | 老架构 `vllm/engine/llm_engine.py`，v0.11.0 被掏空成垫片 |
 | 引擎层（新） | **V1 engine** | **v0.7.0** | 新架构 `vllm/v1/`，v0.8.0 默认开 |
-| 执行器层 | **MRv2 / Model Runner V2** | **v0.16.0** | V1 引擎**内部** `gpu_model_runner` 的第二代重写 |
+| 执行器层 | **MRv2 / Model Runner V2** | **v0.16.0** | V1 引擎**内部**执行器的第二代重写，落地于新目录 `vllm/v1/worker/gpu/`，与老 `gpu_model_runner.py` 并存 |
 
 **MRv2 ≠ V1 engine。** V1 engine 是 v0.7.0 起的引擎层换代；MRv2 是 v0.16.0 起、在 V1 引擎**内部**对执行器的又一次重写，比 V1 engine 晚约 9 个版本。
 
@@ -57,7 +57,7 @@ LLMEngine = V1LLMEngine  # type: ignore
 
 ### 第 3 层：MRv2 / Model Runner V2（执行器重写）
 
-- **代码位置**：`vllm/v1/worker/gpu_model_runner.py`（V1 引擎**内部**的 GPU 执行器）
+- **代码位置**：`vllm/v1/worker/gpu/`（V1 引擎**内部**新目录，核心文件 `gpu/model_runner.py` 的 `class GPUModelRunner`），与老执行器 `vllm/v1/worker/gpu_model_runner.py`（同名类，7902 行）并存。该目录的 `README.md` 自述 "# [Experimental] Model Runner V2"。
 - **首个 commit**：`#25266 GPU Model Runner V2`，日期 **2025-11-21**，**v0.16.0** 合入
 - **是什么**：V1 引擎虽然 v0.7.0 就有了，但它内部的 `gpu_model_runner`（负责实际把请求跑过模型、管 CUDA Graph、采样等）在 v0.16.0 又被**整体重写了一遍**——这次重写叫 Model Runner V2（MRv2）。
 - **为什么重写**（老 Model Runner 的硬伤）：
@@ -69,7 +69,7 @@ LLMEngine = V1LLMEngine  # type: ignore
 | 多模态 | 后期打补丁 | 原生一等公民 |
 | 采样 | 路径分散 | Gumbel sampling 等融合优化 |
 
-- **MRv2 没有 `VLLM_USE_MRV2` 用户开关**。它是引擎内部组件，靠**渐进式能力补齐**（逐个覆盖稠密/MoE/多模态/投机解码）来"接管"，而非某版本一个 flag 翻转。所以"MRv2 何时默认"不是个干净断点。
+- **MRv2 有用户开关 `VLLM_USE_V2_MODEL_RUNNER`**（v0.24.0 起，定义在 `vllm/envs.py`）。但未设该环境变量时，`vllm/config/vllm.py` 的 `use_v2_model_runner` 按**模型与场景条件启用**：PCP>1、dspark 投机解码、DFlash 混合草稿、diffusion 模型等**强制走 V2**；其余仅"默认 V2 模型列表"内 + 有 Triton + 不在支持特性黑名单上的模型才走 V2，否则回退老执行器并打 warning。所以 MRv2 是"渐进式接管"，"MRv2 何时默认"不是个干净断点。源码实证见 [FAQ.md](FAQ.md) Q3。
 
 ---
 
@@ -134,7 +134,8 @@ LLMEngine = V1LLMEngine  # type: ignore
 如果你在确认"我的 vLLM 用的是不是 MRv2 / V1"：
 
 - **vLLM ≥ v0.8.0**：默认就是 V1 engine（`vllm/v1/`）。
-- **vLLM ≥ v0.16.0**：V1 engine 内部已开始用 MRv2 执行器，逐版本成熟。
-- **vLLM ≥ v0.25.0**：老 PagedAttention CUDA kernel 已删，V1 + MRv2 是唯一路径。
+- **vLLM ≥ v0.16.0**：V1 engine 内部已有 MRv2 执行器（`vllm/v1/worker/gpu/`），逐版本成熟。
+- **vLLM ≥ v0.25.0**：老 PagedAttention CUDA kernel 已删。
 - 查当前版本：`pip show vllm | grep Version`
-- 查是否走 V1：v0.8~v0.11 可看环境变量 `VLLM_USE_V1`；v0.12+ 该变量已废弃，V1 是唯一引擎无需确认。
+- 查是否走 V1 engine：v0.8~v0.11 可看环境变量 `VLLM_USE_V1`；v0.12+ 该变量已废弃，V1 engine 是唯一引擎层。
+- 查是否走 MRv2（V2 执行器）：v0.24+ 设 `VLLM_USE_V2_MODEL_RUNNER=1` 强制开、`=0` 强制关；不设则按 `use_v2_model_runner` 的条件判定（见上文）。启动日志若出现 `"Model Runner V2 does not yet support ...; using the V1 model runner instead."` 说明你的配置回退到了老执行器。
