@@ -56,6 +56,46 @@ _REPAIR_TAIL_CANDIDATES = [
 ]
 
 
+def _find_embedded_brace(raw: str):
+    """定位'第一个对象未闭合就嵌入下一个 {'的多余 { 位置。找不到返回 None。
+
+    跟踪字符串内外、转义、括号深度。第一个对象开始后(depth>=1)，
+    若在 depth==1 且非字符串内遇到 {，视为多余嵌入。
+    注：合法嵌套({\"a\":{\"b\":1}})也可能命中，但调用方会用 json.loads 验证兜住误判。
+    """
+    depth = 0
+    in_str = False
+    esc = False
+    started = False
+    for i, ch in enumerate(raw):
+        if esc:
+            esc = False
+            continue
+        if ch == "\\":
+            esc = True
+            continue
+        if ch == '"':
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if ch == "{":
+            if not started:
+                started = True
+                depth = 1
+            else:
+                if depth == 1:
+                    return i
+                depth += 1
+        elif ch in "[":  # noqa: E741
+            if started:
+                depth += 1
+        elif ch in "}]":
+            if started:
+                depth -= 1
+    return None
+
+
 def try_repair_input(raw: str):
     """尝试修复畸形 input JSON。成功返回修复后字符串，失败/已合法返回 None。"""
     if not raw or not raw.strip():
@@ -88,6 +128,34 @@ def try_repair_input(raw: str):
             return cand
         except Exception:
             continue
+    # 4) 对象未闭合就嵌入下一个 { 的形态（如 {"a":1{"a":1}，第一个对象没闭合就塞进第二个）。
+    #    找到那个多余的 {（第一个对象内、depth==1、非字符串内出现的 {），删掉它及之后内容，补 } 闭合。
+    #    用字符串/括号状态机定位，但最终用 json.loads 验证，误判会被验证兜住。
+    embed_pos = _find_embedded_brace(raw)
+    if embed_pos is not None:
+        cand = raw[:embed_pos] + "}"
+        try:
+            json.loads(cand)
+            return cand
+        except Exception:
+            pass
+    # 5) 提取第一个完整的合法 JSON 对象（对付"整段重复"等漂移：{...}{...} 或 {...}垃圾）
+    #    MTP 偶发会把已生成的参数 JSON 又吐一遍，或尾部掺入垃圾。
+    #    可靠做法：从前往后在每个可能的结束位置(} 或 ])尝试 json.loads，
+    #    第一个能独立解析为合法 JSON 的前缀即为模型真正想发的参数，丢弃其后内容。
+    #    不手写状态机，避免引号/数字配对 bug；直接复用 json 库的解析能力。
+    s = raw.lstrip()
+    if s.startswith("{") or s.startswith("["):
+        for i in range(1, len(raw)):
+            if raw[i] in "}]":
+                cand = raw[: i + 1]
+                try:
+                    json.loads(cand)
+                    # 仅当后面还有非空白内容时才视为"需要截断"（避免误伤本就合法的完整 JSON）
+                    if raw[i + 1:].strip():
+                        return cand
+                except Exception:
+                    continue
     return None
 
 
