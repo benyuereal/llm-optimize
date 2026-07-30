@@ -147,6 +147,15 @@ MRv2 在 block tables 管理上有一个关键设计创新：**将 block tables 
 
 详见 [FAQ.md](FAQ.md) Q6（含完整源码实证）。
 
+### MRv2 的其他关键变化
+
+见 [FAQ.md](FAQ.md) Q7，涵盖：
+- **持久化批处理解耦**：消除 `CachedRequestState`，预分配固定行索引
+- **异步优先设计**：non-blocking 拷贝、`AsyncOutput` 机制、UVA 并发池
+- **代码复杂度降低**：核心文件从 7,916 行降至 1,702 行
+- **Triton 原生采样器**：Gumbel sampling 等基于 Triton 实现
+- **PagedAttention 演进**：思想保留，实现换代
+
 ---
 
 ## 给排查者的速查清单

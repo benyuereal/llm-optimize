@@ -364,3 +364,81 @@ def shutdown(self) -> None:
 4. **仅在关闭时统一清理**：`shutdown()` 方法才真正释放所有 GPU 张量。
 
 这是**以空间换时间**的策略——用预分配 + 行锁定 + 就地更新，避免在高频推理步骤中重复进行昂贵的内存分配与释放，将 block tables 的管理完全在 GPU 内部闭环完成。
+
+---
+
+## Q7：MRv2 整体架构还有哪些关键变化？
+
+MRv2 不只是在 block tables 上做了优化，而是一次从第一性原理出发的**执行引擎全面重写**。以下是 v0.25.0 中 MRv2 已落地的核心变化。
+
+### 1️⃣ 持久化批处理（Persistent Batch）—— 解耦持久状态与输入张量
+
+**老问题**：V1 早期 Model Runner 将持久状态（persistent state）与输入张量（input tensors）**强耦合**，请求变化时需进行昂贵的全张量重排序，并维护了冗余的 `CachedRequestState` 备份（代码位置 `vllm/v1/worker/gpu_model_runner.py` 第 223 行 `from vllm.v1.worker.gpu_input_batch import CachedRequestState`）。
+
+**MRv2 方案**：预分配固定大小的张量作为"车位"，每个请求分配一个生命周期内固定的行索引，请求结束仅标记可重用，消除重排序逻辑。
+
+**源码实证：**
+
+```python
+# vllm/v1/worker/gpu/states.py 第 28-34 行：预分配索引池
+self.free_indices = list(range(max_num_reqs))
+
+# 第 95-96 行：新请求弹出一个固定索引
+req_idx = self.free_indices.pop()
+
+# 第 122-128 行：请求结束仅归还索引
+def remove_request(self, req_id: str) -> int | None:
+    req_idx = self.req_id_to_index.pop(req_id, None)
+    self.free_indices.append(req_idx)  # 仅归还索引，GPU 张量不动
+    return req_idx
+```
+
+`CachedRequestState` 在 MRv2 目录 `vllm/v1/worker/gpu/` 中**已不存在**，MRv2 官方设计文档 `docs/design/model_runner_v2.md` 第 23-39 行明确说明此举"removes the need for CachedRequestState"。
+
+### 2️⃣ GPU-native block tables 管理（已在 Q6 详述）
+
+见 Q6。
+
+### 3️⃣ 异步优先的设计
+
+**老问题**：旧版设计未考虑异步调度，是后期打补丁实现的。
+
+**MRv2 方案**：提供了异步执行的基础设施，包括：
+
+- **`async_copy_to_gpu()`**（`buffer_utils.py` 第 26-41 行）：non-blocking 拷贝，`out.copy_(pinned, non_blocking=True)`
+- **`AsyncOutput`**（`model_runner.py` 第 1508-1516 行）：将 D2H 拷贝与后续规约算子重叠，注释写明"Start async output copy here so that it can overlap with speculator proposal"
+- **`set_default_max_concurrency()`**（`model_runner.py` 第 167 行）：UVA buffer pool 大小设为并发批次数，支撑多步流水
+
+> ⚠️ 注意：模型 runner 本身不直接展示"CPU 准备第 N+1 步，同时 GPU 执行第 N 步"的完整流水线。这种重叠主要发生在引擎/调度器层，模型 runner 提供了异步安全的构建块（separate streams、non-blocking copies、UVA pools）。
+
+### 4️⃣ 代码复杂度降低
+
+| 文件 | 行数 |
+|---|---|
+| 老 Model Runner `vllm/v1/worker/gpu_model_runner.py` | **7,916 行** |
+| MRv2 `vllm/v1/worker/gpu/model_runner.py` | **1,702 行** |
+
+核心文件减少 **78%**。但注意 MRv2 将功能拆到了 `gpu/` 子目录下的多个文件中（`states.py`、`buffer_utils.py`、`block_table.py`、`sample/`、`model_states/` 等），总代码量可能相当。其核心优势是**模块化**——新增功能不用往一个巨大文件里塞。
+
+### 5️⃣ Triton 原生采样器
+
+MRv2 重新实现了采样器，主要基于 Triton kernel：
+
+- `vllm/v1/worker/gpu/sample/gumbel.py`：完整 Triton 实现的 Gumbel sampling（`_gumbel_sample_kernel`、`_temperature_kernel`）
+- 采样器 `sampler.py` 使用 `gumbel_sample` 和 `flashinfer_sample` 进行实际采样
+
+### 6️⃣ PagedAttention 的演进（而非简单的"移除"）
+
+PagedAttention 的变化可以用**"思想保留，实现换代"**来概括：
+
+| 方面 | 被移除的 | 保留的 |
+|---|---|---|
+| **CUDA kernel** | `paged_attention_v1.cu` / `v2.cu` / `attention_kernels.cuh`（`d715b3aa1` 删除） | — |
+| **分页管理 KV Cache 思想** | — | 由 V1 engine 的 `BlockPool` / `KVCacheManager` 继承 |
+| **block tables 数据结构** | — | 仍为核心，MRv2 以更高效的方式（GPU 原生）管理 |
+| **PagedAttention 类** | — | 仍保留在 `vllm/v1/attention/ops/paged_attn.py`，用于 `split_kv_cache` 等工具方法 |
+| **底层注意力 kernel** | 旧 CUDA 实现 | 由各个 attention backend（FlashAttention、FlashInfer、Triton 等）替代 |
+
+### 7️⃣ 关于性能数据
+
+> 一些文章提到"单张 GB200 上 Qwen3-0.6B 吞吐量提升约 56%"等具体数字。**经核查当前代码库（commit `437e0b7f8`），该数字未出现在任何文档、commit message 或 PR 描述中**。MRv2 官方设计文档 `docs/design/model_runner_v2.md` 仅做了定性描述："we believe it is a substantial improvement over V1"。此类性能数据可能存在于外部博客文章或 PR 讨论中，但当前代码库中无可验证来源。
