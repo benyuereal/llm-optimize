@@ -136,12 +136,16 @@ MRv2 在 block tables 管理上有一个关键设计创新：**将 block tables 
 | **内存管理** | 请求结束释放 | 请求结束**标记可重用**，不释放 |
 
 具体实现：
-- 预分配 `(max_num_reqs, max_num_blocks)` 的 GPU 持久化张量（`StagedWriteTensor`）
+- 预分配 `(max_num_reqs, max_num_blocks)` 的 GPU 持久化张量（`StagedWriteTensor`，仅 GPU 一份，无 `self.cpu`）
 - 每次请求变动仅暂存新增的 block_id 到 CPU 列表，再通过 `_apply_write_kernel` Triton 内核写入 GPU
 - 请求结束后不释放 GPU 内存，仅将 `req_idx` 归还到 `free_indices` 池，供新请求覆盖重用
 - 全部 GPU 张量仅在 `shutdown()` 时统一释放
 
-详见 [FAQ.md](FAQ.md) Q6。
+**数据流对比：**
+> **老架构**（`CpuGpuBuffer`）：`CPU(numpy 写入完整表)` → `commit_block_table()` → `copy_(cpu → gpu)` 全量拷贝
+> **MRv2**（`StagedWriteTensor`）：`CPU(暂存差异列表)` → `async_tensor_h2d(仅差异)` → `Triton 内核就地更新 GPU 大表`
+
+详见 [FAQ.md](FAQ.md) Q6（含完整源码实证）。
 
 ---
 
