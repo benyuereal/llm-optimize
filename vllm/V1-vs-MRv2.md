@@ -125,7 +125,23 @@ LLMEngine = V1LLMEngine  # type: ignore
 - **PagedAttention 思想**（没删的）：分页管理 KV Cache 的理念，由 V1 engine 的 `BlockPool` / `KVCacheManager` / `KVCacheCoordinator` 继承。
 - **MRv2 的角色**：MRv2 跑在 V1 engine 上，用的是 V1 的分页 KV 管理，只是执行器（CUDA Graph、采样、投机解码调度）更现代。
 
-详见 [FAQ.md](FAQ.md) Q1/Q2。
+### MRv2 的 block table 管理创新
+
+MRv2 在 block tables 管理上有一个关键设计创新：**将 block tables 的权威副本从 CPU 彻底转移到 GPU**，并采用"只传差异"（diff-only）的更新策略。
+
+| 方面 | 老 Model Runner | MRv2 |
+|---|---|---|
+| **block tables 权威副本** | CPU + GPU 各一份 | **仅 GPU 一份** |
+| **更新方式** | 全量重传 | **只传差异**，Triton 内核就地更新 |
+| **内存管理** | 请求结束释放 | 请求结束**标记可重用**，不释放 |
+
+具体实现：
+- 预分配 `(max_num_reqs, max_num_blocks)` 的 GPU 持久化张量（`StagedWriteTensor`）
+- 每次请求变动仅暂存新增的 block_id 到 CPU 列表，再通过 `_apply_write_kernel` Triton 内核写入 GPU
+- 请求结束后不释放 GPU 内存，仅将 `req_idx` 归还到 `free_indices` 池，供新请求覆盖重用
+- 全部 GPU 张量仅在 `shutdown()` 时统一释放
+
+详见 [FAQ.md](FAQ.md) Q6。
 
 ---
 

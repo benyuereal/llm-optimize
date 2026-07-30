@@ -97,7 +97,7 @@ MRv2 是 vLLM 推理流程的"底盘"执行器：请求怎么排队、KV Cache �
 
 ### 🔍 源码实证（当前仓库 HEAD）
 
-> 以下代码均为当前仓库真实文件内容，作为上述结论的实证。当前 HEAD：`90245f419`（`v0.26.1rc0` 之后 21 个 commit，约 v0.26.1 开发中）。
+> 以下代码均为当前仓库真实文件内容，作为上述结论的实证。当前 HEAD：`437e0b7f8`（`v0.26.1rc0` 之后若干 commit，约 v0.26.1 开发中）。
 
 **实证 1：V0 已成垫片 —— `vllm/engine/llm_engine.py` 全文（7 行）**
 
@@ -241,3 +241,126 @@ def use_v2_model_runner(self) -> bool:
 - 如果代码/配置引用了 PagedAttention 的**内部 API**，必须移除
 - 如果有**自定义 attention 后端**，迁移成本不可忽视
 - v0.25.0 同时移除了 6 个旧模型（Baichuan / Aquila / Grok / Tarsier / AyaVision / MusicFlamingo 等），用这些模型的需先确认替代方案（可走 Transformers 后端，v0.25.0 其性能已追平原生）
+
+---
+
+## Q6：MRv2 的 block tables 管理到底改了啥？听说"不回收"了？
+
+**对。** MRv2 最核心的设计创新，就是把 block tables（以及相关的 slot_mapping、num_computed_tokens 等元数据）的管理**从 CPU 彻底转移到 GPU 上**，并以此为基础实现了"只传差异、不回收"的高效内存管理。
+
+### 核心设计：GPU 持久化 + "只传差异"
+
+| 方面 | 老 Model Runner（V1 早期） | MRv2 |
+|---|---|---|
+| **block tables 权威副本** | CPU + GPU 各一份，需同步 | **仅 GPU 一份**，CPU 无完整副本 |
+| **更新方式** | 每次请求变动全量重传 | **只传差异**（diff-only）|
+| **更新 Kernel** | CPU 全量拷贝到 GPU | Triton 内核**就地更新** GPU 上持久化的大表 |
+| **内存管理** | 请求结束释放 GPU 显存 | 请求结束标记"可重用"，**不释放** |
+
+**关键源码实证**（当前仓库 HEAD `437e0b7f8`）：
+
+**对比实证：block tables 从"CPU + GPU 各一份"变成"仅 GPU 一份"**
+
+> 🟡 老架构用 `CpuGpuBuffer` → CPU 和 GPU 各一份完整副本，每次更新需全量拷贝。
+> 🟢 MRv2 用 `StagedWriteTensor` → 仅 GPU 一份，CPU 只暂存增量差异。
+
+**老架构（V1 早期 Model Runner）—— `vllm/v1/worker/block_table.py` + `vllm/v1/utils.py`**
+
+```python
+# vllm/v1/utils.py 第 110-142 行：CpuGpuBuffer —— CPU + GPU 各一份
+class CpuGpuBuffer:
+    """Buffer to easily copy tensors between CPU and GPU."""
+    def __init__(self, *size, dtype, device, pin_memory=True):
+        self.cpu = torch.zeros(*size, dtype=dtype, device="cpu", pin_memory=pin_memory)  # ← CPU 副本
+        self.gpu = torch.zeros_like(self.cpu, device=device)                              # ← GPU 副本
+        self.np = self.cpu.numpy()
+
+    def copy_to_gpu(self, n=None):
+        return self.gpu[:n].copy_(self.cpu[:n], non_blocking=True)  # CPU → GPU 全量拷贝
+
+# vllm/v1/worker/block_table.py 第 238-243 行：BlockTable 用 CpuGpuBuffer
+def _make_buffer(self, *size, dtype):
+    return CpuGpuBuffer(*size, dtype=dtype, device=self.device, pin_memory=self.pin_memory)
+
+# 第 189-190 行：每次请求变动后全量拷贝
+def commit_block_table(self, num_reqs):
+    self.block_table.copy_to_gpu(num_reqs)  # CPU → GPU 全量拷贝
+```
+
+**MRv2 —— `vllm/v1/worker/gpu/buffer_utils.py` + `gpu/block_table.py`**
+
+```python
+# vllm/v1/worker/gpu/buffer_utils.py 第 135-137 行：StagedWriteTensor —— 仅 GPU 一份
+if not uva_instead_of_gpu:
+    self.gpu = torch.zeros(size, dtype=dtype, device=device)  # ← 只有 GPU，没有 self.cpu
+# 没有 self.cpu，没有 self.np，没有完整的 CPU 副本
+
+# vllm/v1/worker/gpu/block_table.py 第 48-54 行：MRv2 用 StagedWriteTensor
+block_table = StagedWriteTensor(
+    (self.max_num_reqs, max_num_blocks), dtype=torch.int32, device=device
+)
+
+# buffer_utils.py 第 155-165 行：CPU 只暂存增量差异
+def stage_write(self, index, start, x):
+    self._staged_write_indices.append(index)   # 行号
+    self._staged_write_starts.append(start)     # 起始偏移
+    self._staged_write_contents.extend(x)       # 仅新增的 block_id（小列表，非完整表）
+
+# 第 174-201 行：仅将差异用 Triton 内核写入 GPU
+def apply_write(self):
+    write_contents = async_tensor_h2d(self._staged_write_contents, device=self.device)
+    _apply_write_kernel[(n,)](self.gpu, ...)   # Triton 内核就地更新
+    self.clear_staged_writes()                  # 清空暂存
+```
+
+**一句话总结数据流的变化：**
+
+> **老架构**：`CPU(numpy 写入完整表)` → `commit_block_table()` → `copy_(cpu → gpu)` 全量拷贝
+> **MRv2**：`CPU(暂存差异列表)` → `async_tensor_h2d(仅差异)` → `_apply_write_kernel Triton 内核就地更新 GPU 大表`
+
+**实证 2：请求生命周期内"锁定"固定行 —— `vllm/v1/worker/gpu/states.py`**
+
+```python
+# 第 28 行：预分配固定大小的索引池
+self.free_indices = list(range(max_num_reqs))
+
+# 第 95-96 行：新请求弹出一个固定索引
+req_idx = self.free_indices.pop()
+self.req_id_to_index[req_id] = req_idx
+
+# 第 122-128 行：请求结束仅归还索引，不清零 GPU 内存
+def remove_request(self, req_id: str) -> int | None:
+    req_idx = self.req_id_to_index.pop(req_id, None)
+    if req_idx is None:
+        return None
+    self.index_to_req_id.pop(req_idx, None)
+    self.free_indices.append(req_idx)  # 仅归还索引，GPU 张量不动
+    return req_idx
+```
+
+**实证 4：仅在 shutdown 时释放 GPU 张量 —— `vllm/v1/worker/gpu/model_runner.py`**
+
+```python
+# 第 1633-1653 行
+def shutdown(self) -> None:
+    """Release GPU tensors (model weights, KV caches, workspace)"""
+    torch.accelerator.synchronize()
+    if hasattr(self, "kv_caches"):
+        self.kv_caches.clear()
+    if hasattr(self, "attn_groups"):
+        self.attn_groups.clear()
+    del self.model
+    gc.collect()
+    torch.accelerator.empty_cache()
+```
+
+### "不回收"的真正含义：空间重用，而非内存泄漏
+
+"不回收"指的是**不主动逐请求释放 GPU 显存**，而是通过以下方式复用：
+
+1. **预分配固定大小的池**：`BlockTables` 和 `RequestState` 在初始化时分配 `(max_num_reqs, max_num_blocks)` 的 GPU 张量，整个生命周期不再增减。
+2. **请求生命周期内"锁定"位置**：每个请求获得一个**固定行索引**（`req_idx`），在其整个生命周期内独占该行。
+3. **"释放" = "清空并重用"**：请求结束后，仅将 `req_idx` 归还到 `free_indices` 池。新请求到来时直接覆盖该行（`append_block_ids` 的 `overwrite=True` 参数）。
+4. **仅在关闭时统一清理**：`shutdown()` 方法才真正释放所有 GPU 张量。
+
+这是**以空间换时间**的策略——用预分配 + 行锁定 + 就地更新，避免在高频推理步骤中重复进行昂贵的内存分配与释放，将 block tables 的管理完全在 GPU 内部闭环完成。

@@ -27,7 +27,7 @@
 - **Q2**：删的只是 kernel，PagedAttention 的"思想"删了吗？（没删，分页管理 KV Cache 的思想由 MRv2 继承）
 - **Q3**：MRv2 是什么？全称？跟 PagedAttention 什么关系？（Model Runner V2，V1 引擎内部执行器的第二代重写；注意 V1 engine ≠ MRv2，二者层级和时间都不同）
 - **Q4**：MRv2 什么时候加的？（V1 engine v0.7.0 引入、v0.8.0 默认开；V0 LLMEngine v0.11.0 被掏空成垫片；MRv2 从 v0.15/v0.16 起开发，v0.18 已成熟；有开关 `VLLM_USE_V2_MODEL_RUNNER`，按模型/场景条件启用而非全局默认。三层概念与完整时间线见 [V1-vs-MRv2.md](V1-vs-MRv2.md)）
-- **Q5**：MRv2 全面接管对使用有什么影响？（多数用户无感；引用 PagedAttention 内部 API / 自定义 attention 后端需迁移）
+- **Q6**：MRv2 的 block tables 管理到底改了啥？"不回收"是什么意思？（block tables 从 CPU 移到 GPU，采用"只传差异"策略，预分配 + 行锁定 + 关闭时统一释放）
 
 ## 各版头条亮点
 
