@@ -198,34 +198,24 @@ def use_v2_model_runner(self) -> bool:
 
 ## Q4：MRv2 是什么时候加的？
 
-**纠正一个常见误解**：MRv2 **不是** v0.7.0 加的（那是 V1 engine），也**不是** v0.24/0.25 才出现。MRv2 从 **v0.15/v0.16 就开始开发**，到 v0.18 已相当活跃——经 git 逐版本核实（统计含 `MRv2`/`Model Runner V2` 的 commit 数）：
+**纠正一个常见误解**：MRv2 **不是** v0.7.0 加的（那是 V1 engine），也**不是** v0.24/0.25 才出现。MRv2 从 **v0.15/v0.16 就开始开发**，到 v0.18 已相当活跃——并且是有用户开关的**渐进式接管**，到 v0.25.0 才删除老 PagedAttention kernel 完成换代。
 
-| 版本 | MRv2 相关 commit 累计数 | 节点 |
-|---|---|---|
-| v0.15.0 | 52 | 开发中（首个 commit `#25266` 日期 **2025-11-21**）|
-| **v0.16.0** | 55 | **`#25266 GPU Model Runner V2` 已合入**，MRv2 正式落地 |
-| v0.17.0 | 93 | 快速增长 |
-| **v0.18.0** | 112 | 已成熟，多模态/投机解码/CUDA Graph 持续补齐 |
-| v0.19.0 | 131 | |
-| v0.20.0 | 144 | |
-| v0.22.0 | 173 | |
-| v0.24.0 | 200 | |
-| v0.25.0 | 220 | 删除老 PagedAttention kernel |
-| v0.26.0 | 225 | |
+| 版本 | 节点 |
+|---|---|
+| **v0.15.0** | MRv2 开始开发（首个 commit `#25266` 日期 2025-11-21）|
+| **v0.16.0** | `#25266` 合入，MRv2 正式落地 |
+| **v0.18.0** | 112 个 MRv2 相关 commit，已成熟 |
+| **v0.25.0** | 220 个 commit，删除老 PagedAttention kernel，稠密模型默认走 MRv2 |
 
-### 三层换代的完整时间线（git 核实）
+### 三层换代的重大时间节点
 
-| 版本 | V1 engine（引擎层）| MRv2（执行器层）| PagedAttention kernel | V0 LLMEngine |
+| 版本 | V1 engine | MRv2 | PagedAttention kernel | V0 LLMEngine |
 |---|---|---|---|---|
-| v0.6.0 | ❌ 无 | ❌ 无 | ✅ 在 | ✅ 2061 行真实实现 |
-| **v0.7.0** | ✅ 引入（`#9289`），默认关 | — | ✅ 在 | ✅ 在 |
-| **v0.8.0** | 默认开（`VLLM_USE_V1=True`）| — | ✅ 在 | ✅ 在 |
-| **v0.11.0** | 已默认 | — | ✅ 在 | ⚰️ **掏空成 6 行垫片** |
-| v0.12.0 | `use_v1` 参数废弃（`#28112`），固化 | — | ✅ 在 | 垫片 |
-| **v0.16.0** | 已默认 | ✅ **MRv2 引入**（`#25266`）| ✅ 在 | 垫片 |
-| v0.18.0 | 已默认 | 112 commit，成熟中 | ✅ 在 | 垫片 |
-| v0.24.0 | 已默认 | 200 commit，能力补齐 | ✅ 在 | 垫片 |
-| **v0.25.0** | 已默认 | 220 commit | ❌ **删除**（`d715b3aa1`）| 垫片 |
+| **v0.7.0** | ✅ 引入，默认关 | ❌ 无 | ✅ 在 | ✅ 在 |
+| **v0.8.0** | ✅ 默认开 | ❌ 无 | ✅ 在 | ✅ 在 |
+| **v0.11.0** | 已默认 | ❌ 无 | ✅ 在 | ⚰️ 掏空成垫片 |
+| **v0.16.0** | 已默认 | ✅ MRv2 引入 | ✅ 在 | 垫片 |
+| **v0.25.0** | 已默认 | ✅ 全面接管 | ❌ 删除 | 垫片 |
 
 > ⚠️ **关于 `#25033`**：commit `[V0 Deprecation] Remove LLMEngine (#25033)` 标题容易让人以为"v0.25 删了 LLMEngine"，但它实际日期是 2025-10-03、位于较早分支，不在 v0.24/v0.25/v0.26 tag 内。主线 V0 `LLMEngine` 早在 **v0.11.0** 就被掏空成重导出 V1 的 6 行垫片（v0.10.0 还是 2061 行真实实现）。判版本不能只看 commit 标题。
 
@@ -244,9 +234,11 @@ def use_v2_model_runner(self) -> bool:
 
 ---
 
-## Q6：MRv2 的 block tables 管理到底改了啥？听说"不回收"了？
+## Q6：MRv2 的 block tables 管理
 
-**对。** MRv2 最核心的设计创新，就是把 block tables（以及相关的 slot_mapping、num_computed_tokens 等元数据）的管理**从 CPU 彻底转移到 GPU 上**，并以此为基础实现了"只传差异、不回收"的高效内存管理。
+MRv2 最核心的设计创新，就是把 block tables 的管理**从 CPU 彻底转移到 GPU 上**，并以此为基础实现了"只传差异、不回收"的高效内存管理。
+
+> 官方设计文档：[docs.vllm.com.cn/en/latest/design/model_runner_v2](https://docs.vllm.com.cn/en/latest/design/model_runner_v2/)（第 4 节 StagedWriteTensor）
 
 ### 核心设计：GPU 持久化 + "只传差异"
 
@@ -259,96 +251,72 @@ def use_v2_model_runner(self) -> bool:
 
 **关键源码实证**（当前仓库 HEAD `437e0b7f8`）：
 
-**对比实证：block tables 从"CPU + GPU 各一份"变成"仅 GPU 一份"**
+#### 对比：老架构 vs MRv2 的数据存储方式
 
-> 🟡 老架构用 `CpuGpuBuffer` → CPU 和 GPU 各一份完整副本，每次更新需全量拷贝。
-> 🟢 MRv2 用 `StagedWriteTensor` → 仅 GPU 一份，CPU 只暂存增量差异。
-
-**老架构（V1 早期 Model Runner）—— `vllm/v1/worker/block_table.py` + `vllm/v1/utils.py`**
+**老架构**用 `CpuGpuBuffer`（`vllm/v1/utils.py` 第 110-137 行）——CPU 和 GPU 各一份完整副本，每次更新需全量拷贝：
 
 ```python
-# vllm/v1/utils.py 第 110-142 行：CpuGpuBuffer —— CPU + GPU 各一份
 class CpuGpuBuffer:
-    """Buffer to easily copy tensors between CPU and GPU."""
     def __init__(self, *size, dtype, device, pin_memory=True):
-        self.cpu = torch.zeros(*size, dtype=dtype, device="cpu", pin_memory=pin_memory)  # ← CPU 副本
-        self.gpu = torch.zeros_like(self.cpu, device=device)                              # ← GPU 副本
+        self.cpu = torch.zeros(*size, dtype=dtype, device="cpu", pin_memory=pin_memory)  # CPU 副本
+        self.gpu = torch.zeros_like(self.cpu, device=device)                              # GPU 副本
         self.np = self.cpu.numpy()
 
     def copy_to_gpu(self, n=None):
         return self.gpu[:n].copy_(self.cpu[:n], non_blocking=True)  # CPU → GPU 全量拷贝
-
-# vllm/v1/worker/block_table.py 第 238-243 行：BlockTable 用 CpuGpuBuffer
-def _make_buffer(self, *size, dtype):
-    return CpuGpuBuffer(*size, dtype=dtype, device=self.device, pin_memory=self.pin_memory)
-
-# 第 189-190 行：每次请求变动后全量拷贝
-def commit_block_table(self, num_reqs):
-    self.block_table.copy_to_gpu(num_reqs)  # CPU → GPU 全量拷贝
 ```
 
-**MRv2 —— `vllm/v1/worker/gpu/buffer_utils.py` + `gpu/block_table.py`**
+每次请求变动后调用 `commit_block_table()`（`vllm/v1/worker/block_table.py` 第 189-190 行）：`self.block_table.copy_to_gpu(num_reqs)`。
+
+**MRv2** 用 `StagedWriteTensor`（`vllm/v1/worker/gpu/buffer_utils.py` 第 135-137 行）——**仅 GPU 一份**，CPU 只暂存增量差异：
 
 ```python
-# vllm/v1/worker/gpu/buffer_utils.py 第 135-137 行：StagedWriteTensor —— 仅 GPU 一份
-if not uva_instead_of_gpu:
-    self.gpu = torch.zeros(size, dtype=dtype, device=device)  # ← 只有 GPU，没有 self.cpu
 # 没有 self.cpu，没有 self.np，没有完整的 CPU 副本
+self.gpu = torch.zeros(size, dtype=dtype, device=device)  # 只有 GPU 张量
+```
 
-# vllm/v1/worker/gpu/block_table.py 第 48-54 行：MRv2 用 StagedWriteTensor
-block_table = StagedWriteTensor(
-    (self.max_num_reqs, max_num_blocks), dtype=torch.int32, device=device
-)
+CPU 暂存差异（`stage_write`，第 155-165 行），然后用 Triton 内核就地写入 GPU（`apply_write`，第 174-201 行）：
 
-# buffer_utils.py 第 155-165 行：CPU 只暂存增量差异
+```python
 def stage_write(self, index, start, x):
     self._staged_write_indices.append(index)   # 行号
     self._staged_write_starts.append(start)     # 起始偏移
     self._staged_write_contents.extend(x)       # 仅新增的 block_id（小列表，非完整表）
 
-# 第 174-201 行：仅将差异用 Triton 内核写入 GPU
 def apply_write(self):
     write_contents = async_tensor_h2d(self._staged_write_contents, device=self.device)
     _apply_write_kernel[(n,)](self.gpu, ...)   # Triton 内核就地更新
     self.clear_staged_writes()                  # 清空暂存
 ```
 
-**一句话总结数据流的变化：**
-
+**数据流变化：**
 > **老架构**：`CPU(numpy 写入完整表)` → `commit_block_table()` → `copy_(cpu → gpu)` 全量拷贝
 > **MRv2**：`CPU(暂存差异列表)` → `async_tensor_h2d(仅差异)` → `_apply_write_kernel Triton 内核就地更新 GPU 大表`
 
-**实证 2：请求生命周期内"锁定"固定行 —— `vllm/v1/worker/gpu/states.py`**
+#### 请求生命周期内"锁定"固定行
+
+`vllm/v1/worker/gpu/states.py` —— 预分配固定大小的索引池，每个请求弹出一个固定索引，请求结束仅归还：
 
 ```python
-# 第 28 行：预分配固定大小的索引池
-self.free_indices = list(range(max_num_reqs))
+self.free_indices = list(range(max_num_reqs))     # 预分配索引池
+req_idx = self.free_indices.pop()                  # 新请求弹出一个固定索引
 
-# 第 95-96 行：新请求弹出一个固定索引
-req_idx = self.free_indices.pop()
-self.req_id_to_index[req_id] = req_idx
-
-# 第 122-128 行：请求结束仅归还索引，不清零 GPU 内存
 def remove_request(self, req_id: str) -> int | None:
     req_idx = self.req_id_to_index.pop(req_id, None)
-    if req_idx is None:
-        return None
-    self.index_to_req_id.pop(req_idx, None)
-    self.free_indices.append(req_idx)  # 仅归还索引，GPU 张量不动
+    self.free_indices.append(req_idx)              # 仅归还索引，GPU 张量不动
     return req_idx
 ```
 
-**实证 4：仅在 shutdown 时释放 GPU 张量 —— `vllm/v1/worker/gpu/model_runner.py`**
+#### 仅在 shutdown 时释放 GPU 张量
+
+`vllm/v1/worker/gpu/model_runner.py` 第 1633-1653 行：
 
 ```python
-# 第 1633-1653 行
 def shutdown(self) -> None:
     """Release GPU tensors (model weights, KV caches, workspace)"""
     torch.accelerator.synchronize()
-    if hasattr(self, "kv_caches"):
-        self.kv_caches.clear()
-    if hasattr(self, "attn_groups"):
-        self.attn_groups.clear()
+    if hasattr(self, "kv_caches"):  self.kv_caches.clear()
+    if hasattr(self, "attn_groups"):  self.attn_groups.clear()
     del self.model
     gc.collect()
     torch.accelerator.empty_cache()
@@ -370,6 +338,8 @@ def shutdown(self) -> None:
 ## Q7：MRv2 整体架构还有哪些关键变化？
 
 MRv2 不只是在 block tables 上做了优化，而是一次从第一性原理出发的**执行引擎全面重写**。以下是 v0.25.0 中 MRv2 已落地的核心变化。
+
+> 官方设计文档：[docs.vllm.com.cn/en/latest/design/model_runner_v2](https://docs.vllm.com.cn/en/latest/design/model_runner_v2/)（含 Persistent Batch、Async-First、StagedWriteTensor、Triton 原生采样器、模块化等完整章节）
 
 ### 1️⃣ 持久化批处理（Persistent Batch）—— 解耦持久状态与输入张量
 

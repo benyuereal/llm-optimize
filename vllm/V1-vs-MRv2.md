@@ -3,6 +3,8 @@
 > 这篇文档专门回答一个高频混淆点：**"MRv2 到底是什么？什么时候加的？"**
 >
 > 很多人（包括本文档的早期版本）把 vLLM 的引擎换代当成"一次事件"，其实它是**三个不同层级、不同时间**的换代叠加。本文每条结论均经 vLLM 仓库 `git tag` 逐版本核实。
+>
+> 官方设计文档：[docs.vllm.com.cn/en/latest/design/model_runner_v2](https://docs.vllm.com.cn/en/latest/design/model_runner_v2/)
 
 ---
 
