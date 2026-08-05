@@ -25,9 +25,9 @@ MTP speculative decoding (num_speculative_tokens=3), max-num-batched-tokens 1638
 ```
 gemm-optimize/gemma4/
 ├── README.md                         # 本文件
-├── start.sh                          # vllm serve 启动脚本 (含 patch 开关)
-├── triton_w4a16.py.original          # vllm 原始 triton_w4a16.py (回退用)
-├── triton_w4a16.py.aiter_patch       # 打了 aiter patch 的 triton_w4a16.py
+├── patch.sh                          # 一键安装 / 回退 / 查看状态
+├── triton_w4a16.py                   # vllm 原始 triton_w4a16.py (回退用)
+├── triton_w4a16.py.patch             # 打了 aiter patch 的 triton_w4a16.py
 ├── aiter_gemm_a16w4.py               # aiter triton w4a16 kernel (已修 triton3.5 兼容)
 ├── configs/awq_w4a16/                # 调优后的 aiter config (gs=32, BW200, 10 个 shape)
 └── tests/                            # 验证 / 性能 / 调优脚本
@@ -41,53 +41,51 @@ gemm-optimize/gemma4/
 
 ---
 
-## 如何切换 (对比 baseline vs patch)
+## 一键安装 / 回退
 
-patch 的启停由环境变量 `VLLM_AITER_W4A16_PATCH` 控制,**不需要换文件**:
-- `=1` 启用 aiter patch(用 aiter kernel)
-- `=0` 走 vllm 原生 triton w4a16(baseline)
+用 `patch.sh` 一键操作(脚本内部会自动备份原始文件、放置 aiter kernel 和 config、清 torch.compile 缓存):
 
-`start.sh` 第 38 行:
 ```bash
-export VLLM_AITER_W4A16_PATCH=1   # 1=aiter, 0=baseline
+cd gemm-optimize/gemma4
+
+./patch.sh install   # 安装 aiter patch (替换 vllm kernel + 放置 aiter kernel/config + 备份原始 + 清缓存)
+./patch.sh revert    # 回退到 vllm 原始 triton_w4a16.py (+ 清缓存)
+./patch.sh status    # 查看当前安装状态
 ```
 
-> 当前提交里 `start.sh` 写的是 `=0`(测 baseline 时改的)。要跑 aiter 版请改回 `=1`。
+`install` 会:
+1. 备份当前 vllm `triton_w4a16.py` → `triton_w4a16.py.bak`(只备份一次)
+2. 把 `triton_w4a16.py.patch` 拷到 vllm 安装目录
+3. 把 `aiter_gemm_a16w4.py` 放到 `$AITER_ROOT/aiter/ops/triton/`
+4. 把 `configs/awq_w4a16/*.json` 放到 `$AITER_ROOT/aiter/ops/triton/configs/gemm/awq_w4a16/`
+5. 清空 torch.compile 缓存(切换后必做)
 
-如果想**物理替换文件**对比(而非环境变量),把对应版本拷到 vllm 安装目录:
+> 脚本顶部的 `VLLM_DIR` 和 `AITER_ROOT` 可按环境修改。
+
+### 启动 vllm
+
+`patch.sh install` 只装文件,不启动 vllm。启动时需设置环境变量:
 ```bash
-VLLM_DIR=/usr/local/lib/python3.10/dist-packages/vllm/model_executor/kernels/linear/mixed_precision
-# baseline
-cp triton_w4a16.py.original  $VLLM_DIR/triton_w4a16.py
-# aiter patch
-cp triton_w4a16.py.aiter_patch $VLLM_DIR/triton_w4a16.py
-```
-
----
-
-## 部署步骤 (从零启用 aiter patch)
-
-### 1. 替换 vllm 的 triton_w4a16.py
-```bash
-VLLM_DIR=/usr/local/lib/python3.10/dist-packages/vllm/model_executor/kernels/linear/mixed_precision
-cp triton_w4a16.py.aiter_patch $VLLM_DIR/triton_w4a16.py
-```
-
-### 2. 放置 aiter kernel 和 config
-```bash
-# aiter kernel (已修 triton 3.5 兼容: @triton.jit, 去掉 key=)
-cp aiter_gemm_a16w4.py /public/home/weishb/aiter/aiter/ops/triton/gemm_a16w4.py
-
-# 调优 config (gs=32, BW200)
-cp configs/awq_w4a16/*.json \
-   /public/home/weishb/aiter/aiter/ops/triton/configs/gemm/awq_w4a16/
-```
-
-### 3. 开启 patch 并启动
-```bash
-export VLLM_AITER_W4A16_PATCH=1
+export VLLM_AITER_W4A16_PATCH=1   # 1=启用 aiter kernel; 0 或 unset=走 vllm 原生 triton w4a16
 export AITER_ROOT=/public/home/weishb/aiter
-bash start.sh
+# 然后用你自己的 vllm serve 启动命令
+```
+
+### 对比 baseline vs patch 的两种方式
+
+**方式 A(推荐,不换文件)**:都 `./patch.sh install`,靠环境变量切换:
+- `VLLM_AITER_W4A16_PATCH=1` → aiter patch
+- `VLLM_AITER_W4A16_PATCH=0` → vllm 原生 triton w4a16(文件是 patch 版,但运行时不走 aiter 分支)
+
+切换环境变量后**必须清缓存再重启**:
+```bash
+rm -rf /root/.cache/vllm/torch_compile_cache /tmp/torchinductor_root
+```
+
+**方式 B(物理换文件)**:
+```bash
+./patch.sh install    # vllm 文件 = patch 版
+./patch.sh revert     # vllm 文件 = 原始版
 ```
 
 ---
@@ -150,8 +148,8 @@ BW10 有 80 CUs。调优后关键参数:
   改 gs=32 需重写汇编,且 gs=32→64 合并精度损失大(cos_sim 0.7-0.84),故走 triton 路径。
 - **AITER_ROOT**: patch 用 importlib 绕过 aiter `__init__.py` 的 JIT 编译(ck_tile/core.hpp 找不到),
   只加载 `aiter.ops.triton` 子模块。`AITER_ROOT` 指向 aiter 仓库根目录。
-- **torch compile 缓存**: 切换 patch 开关后,若遇 `'_OpNamespace' 'aiter' object has no attribute ...`
-  报错,清缓存:
+- **torch compile 缓存**: 切换 patch 开关或换文件后,若遇 `'_OpNamespace' 'aiter' object has no attribute ...`
+  报错,是旧的编译缓存被复用了。`patch.sh install/revert` 已自动清缓存;手动切换环境变量时需自己清:
   ```bash
   rm -rf /root/.cache/vllm/torch_compile_cache /tmp/torchinductor_root
   ```
