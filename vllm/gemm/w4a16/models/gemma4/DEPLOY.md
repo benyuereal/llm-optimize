@@ -95,13 +95,16 @@ HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 vllm bench serve \
 > **第一轮含预热(编译/图捕获),偏慢,请连跑两轮,取第二轮稳态结果。**
 > 关键看 `Mean TPOT (ms)`(每 token 延迟)和 `Benchmark duration (s)`(总时长)。
 
-### 参考性能数据(本方案实测,稳态第二轮)
+### 参考性能数据(本方案实测)
 
 | 配置 | duration | TPOT | TTFT | 吞吐 (tok/s) |
 |------|----------|------|------|-------------|
 | baseline (vllm 原生) | 94.45s | 90.72ms | 1.10s | 43.37 |
-| **aiter patch** | **72.11s** | **68.46ms** | 1.19s | **56.80** |
-| 提升 | -23.6% | **-24.6%** | 持平 | **+31%** |
+| **aiter patch** | **~77s** | **~74ms** | 1.29s | **~52 tok/s** |
+| 提升 | -18.5% | **-18.5%** | 持平 | **+20%** |
+
+> 实测稳态 TPOT 73-75ms(3 轮以上 bench 稳定),最低观测值 68ms(系统空闲时)。
+> 提升幅度因系统负载略有波动。
 
 环境:TP=4,MTP 投机解码(num_speculative_tokens=3),optimization-level 3。
 **前提:DCU 已锁频到 sclk 760MHz**(见下节,锁频不生效会导致 TPOT 偏高 5~7ms)。
@@ -151,7 +154,7 @@ rocm-smi --showclocks 2>&1 | grep sclk
 ```
 
 看到 4 张卡都 `Successfully set sclk frequency mask to Level 6` 即成功。
-锁完**不用重启 vllm**,直接再跑 bench,TPOT 应回落到 ~68ms。
+锁完**不用重启 vllm**,直接再跑 bench,TPOT 应回落到正常水平(~74ms)。
 
 > 若手动锁频也报错(如 `Permission denied`、`Failed to set`),说明容器没有
 > rocm-smi 写权限。需在宿主机层面锁频(所有容器共享),或给容器加设备权限。
@@ -218,7 +221,7 @@ pass@1 达 97.56%,与该模型未打 patch 时的正常水平一致,确认 **ait
 
 - **排查问题时想关掉 aiter**:`VLLM_AITER_W4A16_PATCH=0 vllm serve ...`(装了 patch 但运行时回退到 vllm 原生 triton,用于定位是否 aiter 引入的问题)。
 
-- **TPOT 比参考值(68ms)偏高 5~7ms**:大概率是 DCU 没锁频。按"三·5. 锁频检测"一节
+- **TPOT 比参考值(74ms)偏高 5~7ms**:大概率是 DCU 没锁频。按"三·5. 锁频检测"一节
   检查 `rocm-smi --showclocks | grep sclk`,没锁上就手动锁。
 
 - **换到新容器/新机器**:只要 `pip install aiter`(DCU 定制版)和 vllm 已装好,

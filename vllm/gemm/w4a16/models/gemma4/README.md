@@ -12,19 +12,21 @@ gemma-4-31B-it-AWQ-4bit 在 Hygon DCU BW10 (gfx936) 上的 aiter w4a16 调优产
 - 结构: 60 层,hidden=5376,GQA 32:16,head_dim=256,sliding_window=1024
 - intermediate: 14336
 
-## 性能对比 (端到端, vllm bench serve, 4 prompts × 5120 in / 1024 out, 稳态第二轮)
+## 性能对比 (端到端, vllm bench serve, 4 prompts × 5120 in / 1024 out)
 
 | 配置 | duration | TPOT | TTFT | 吞吐 (tok/s) | acceptance |
 |------|----------|------|------|-------------|-----------|
 | baseline (vllm 原生 triton w4a16) | 94.45s | 90.72ms | 1.10s | 43.37 | 96.85% |
-| **aiter patch (gs=32, tuned)** | **72.11s** | **68.46ms** | 1.19s | **56.80** | 97.48% |
+| **aiter patch (gs=32, tuned)** | **~77s** | **~74ms** | 1.29s | **~52 tok/s** | **~97%** |
 
-- duration: 94.45s → 72.11s(**-23.6%**)
-- TPOT: 90.72ms → 68.46ms(**-24.6%**)
-- 吞吐: 43.37 → 56.80 tok/s(**+31%**)
-- TTFT 基本持平(1.10s vs 1.19s)
+- TPOT: 90.72ms → ~74ms(**-18.5%**)
+- 吞吐: 43.37 → ~52 tok/s(**+20%**)
+- TTFT 基本持平(1.10s vs 1.29s)
 - 精度: 离线 verify `cos_sim = 1.000000`(完全一致);端到端 speculative acceptance
-  97.48% vs 96.85%,**无下降**;HumanEval pass@1 = **97.56%**(164 题,evalscope 评测)
+  ~97% vs 96.85%,**无下降**;HumanEval pass@1 = **97.56%**(164 题,evalscope 评测)
+
+> 实测稳态 TPOT 73-75ms(3 轮以上 bench 稳定),提升幅度因系统负载略有波动。
+> 最低观测值 68ms(清晨系统空闲时)。
 
 环境: TP=4, attention-backend TRITON_ATTN, kv-cache-dtype fp8, optimization-level 3,
 MTP speculative decoding (num_speculative_tokens=3), max-num-batched-tokens 16384。
