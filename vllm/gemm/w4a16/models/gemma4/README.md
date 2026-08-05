@@ -17,16 +17,18 @@ gemma-4-31B-it-AWQ-4bit 在 Hygon DCU BW10 (gfx936) 上的 aiter w4a16 调优产
 | 配置 | duration | TPOT | TTFT | 吞吐 (tok/s) | acceptance |
 |------|----------|------|------|-------------|-----------|
 | baseline (vllm 原生 triton w4a16) | 94.45s | 90.72ms | 1.10s | 43.37 | 96.85% |
-| **aiter patch (gs=32, tuned)** | **~77s** | **~74ms** | 1.29s | **~52 tok/s** | **~97%** |
+| **aiter patch (gs=32, tuned)** | **71.12s** | **67.76ms** | 1.06s | **57.59 tok/s** | **98.30%** |
+| 提升 | **-24.7%** | **-25.3%** | 持平 | **+32.8%** | +1.45pp |
 
-- TPOT: 90.72ms → ~74ms(**-18.5%**)
-- 吞吐: 43.37 → ~52 tok/s(**+20%**)
-- TTFT 基本持平(1.10s vs 1.29s)
+- TPOT: 90.72ms → **67.76ms(-25.3%)**
+- 吞吐: 43.37 → **57.59 tok/s(+32.8%)**
+- TTFT 基本持平(1.10s vs 1.06s)
+- Acceptance rate: 96.85% → **98.30%(+1.45pp)**
 - 精度: 离线 verify `cos_sim = 1.000000`(完全一致);端到端 speculative acceptance
-  ~97% vs 96.85%,**无下降**;HumanEval pass@1 = **97.56%**(164 题,evalscope 评测)
+  无下降;HumanEval pass@1 = **97.56%**(164 题,evalscope 评测)
 
-> 实测稳态 TPOT 73-75ms(3 轮以上 bench 稳定),提升幅度因系统负载略有波动。
-> 最低观测值 68ms(清晨系统空闲时)。
+> 关闭 `--enable-log-requests` 后性能进一步提升(约 5-7ms TPOT 差异),实测稳态 TPOT 67-68ms。
+> 该参数会占用 CPU I/O 资源,影响 decode 阶段性能,生产环境建议关闭。
 
 环境: TP=4, attention-backend TRITON_ATTN, kv-cache-dtype fp8, optimization-level 3,
 MTP speculative decoding (num_speculative_tokens=3), max-num-batched-tokens 16384。

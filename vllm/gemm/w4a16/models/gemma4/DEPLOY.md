@@ -1,7 +1,7 @@
 # aiter w4a16 GEMM 加速 · 部署方案
 
 在 Hygon DCU BW10 (gfx936) 上,用 aiter triton w4a16 kernel 替换 vllm 自带 kernel,
-加速 gemma-4-31B-it-AWQ-4bit 推理,**精度无损**,端到端 **TPOT -25%、吞吐 +31%**。
+加速 gemma-4-31B-it-AWQ-4bit 推理,**精度无损**,端到端 **TPOT -25%、吞吐 +33%**。
 
 本方案面向部署人员,按下面 4 步操作即可,无需理解内部实现。
 
@@ -64,14 +64,60 @@ cd llm-optimize/vllm/gemm/w4a16
 
 ### 1. 启动 vllm
 
-用你原来的启动命令即可(示例):
+推荐使用项目提供的启动脚本 `start.sh`(位于 [`models/gemma4/start.sh`](start.sh)):
 
 ```bash
-HIP_VISIBLE_DEVICES=0,1,2,3 vllm serve /data/zq/models/gemma-4-31B-it-AWQ-4bit/ \
-  --tensor-parallel-size 4 \
-  --served-model-name gemma4 \
-  ... (你原有的其他参数)
+cd /public/home/weishb
+bash start.sh
 ```
+
+脚本内容(已包含锁频、环境变量、优化参数):
+
+```bash
+#!/bin/bash
+# ============================================================
+# gemma-4-31B-it-AWQ-4bit vllm serve 启动脚本
+# 配置: TP=4 + aiter w4a16 gemm 加速 (group_size=32)
+# ============================================================
+set -e
+
+export PATH=/opt/hyhal/bin:/opt/dtk/bin:$PATH
+
+# ---- 锁定 4 卡高频 (sclk level 6 = 760MHz, 性能关键) ----
+echo "[start.sh] 锁定 DCU 高性能模式..."
+for i in 0 1 2 3; do
+  rocm-smi -d $i --setperflevel manual >/dev/null 2>&1 || true
+  rocm-smi -d $i --setsclk 6 >/dev/null 2>&1 || true
+done
+echo "[start.sh] 锁频结果确认:"
+for i in 0 1 2 3; do
+  sclk=$(rocm-smi -d $i --showclocks 2>/dev/null | grep -oE "sclk clock level: [0-9]+ \([0-9]+Mhz\)" | head -1)
+  echo "  HCU[$i]: ${sclk:-未获取到频率}"
+done
+
+# ---- 环境变量 ----
+export HIP_VISIBLE_DEVICES=0,1,2,3
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+export VLLM_AITER_W4A16_PATCH=1
+
+# ---- 启动 vllm serve (TP=4) ----
+echo "[start.sh] 启动 vllm serve (TP=4, aiter w4a16 patch 启用)..."
+vllm serve /data/zq/models/gemma-4-31B-it-AWQ-4bit/ \
+    --host 0.0.0.0 --port 8001 \
+    --served-model-name gemma4 \
+    --max-model-len 32768 --max-num-seqs 256 \
+    --kv-cache-dtype fp8 --attention-backend TRITON_ATTN \
+    --tensor-parallel-size 4 --gpu-memory-utilization 0.90 \
+    --optimization-level 3 --trust-remote-code \
+    --enable-prefix-caching --enable-chunked-prefill \
+    --language-model-only --async-scheduling \
+    --performance-mode throughput \
+    --max-num-batched-tokens 16384 \
+    --speculative-config '{"method": "mtp", "model": "/data/zq/models/gemma-4-31B-it-assistant", "num_speculative_tokens": 3}'
+```
+
+> **注意**:脚本中**没有** `--enable-log-requests`(该参数会占用 CPU I/O 资源,导致 TPOT 偏高 5-7ms,生产环境建议关闭)。
 
 等到日志出现 `Application startup complete`、`Uvicorn running on ...` 表示就绪。
 
@@ -100,13 +146,14 @@ HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 vllm bench serve \
 | 配置 | duration | TPOT | TTFT | 吞吐 (tok/s) |
 |------|----------|------|------|-------------|
 | baseline (vllm 原生) | 94.45s | 90.72ms | 1.10s | 43.37 |
-| **aiter patch** | **~77s** | **~74ms** | 1.29s | **~52 tok/s** |
-| 提升 | -18.5% | **-18.5%** | 持平 | **+20%** |
+| **aiter patch** | **71.12s** | **67.76ms** | 1.06s | **57.59 tok/s** |
+| 提升 | **-24.7%** | **-25.3%** | 持平 | **+32.8%** |
 
-> 实测稳态 TPOT 73-75ms(3 轮以上 bench 稳定),最低观测值 68ms(系统空闲时)。
-> 提升幅度因系统负载略有波动。
+> 关闭 `--enable-log-requests` 后性能进一步提升(约 5-7ms TPOT 差异),实测稳态 TPOT 67-68ms。
+> 该参数会占用 CPU I/O 资源,影响 decode 阶段性能,生产环境建议关闭。
 
-环境:TP=4,MTP 投机解码(num_speculative_tokens=3),optimization-level 3。
+环境:TP=4,MTP 投机解码(num_speculative_tokens=3),optimization-level 3,
+**关闭 `--enable-log-requests`**(该参数可导致 TPOT 偏高 5-7ms)。
 **前提:DCU 已锁频到 sclk 760MHz**(见下节,锁频不生效会导致 TPOT 偏高 5~7ms)。
 
 ---
@@ -154,7 +201,7 @@ rocm-smi --showclocks 2>&1 | grep sclk
 ```
 
 看到 4 张卡都 `Successfully set sclk frequency mask to Level 6` 即成功。
-锁完**不用重启 vllm**,直接再跑 bench,TPOT 应回落到正常水平(~74ms)。
+锁完**不用重启 vllm**,直接再跑 bench,TPOT 应回落到正常水平(~68ms)。
 
 > 若手动锁频也报错(如 `Permission denied`、`Failed to set`),说明容器没有
 > rocm-smi 写权限。需在宿主机层面锁频(所有容器共享),或给容器加设备权限。
@@ -221,7 +268,7 @@ pass@1 达 97.56%,与该模型未打 patch 时的正常水平一致,确认 **ait
 
 - **排查问题时想关掉 aiter**:`VLLM_AITER_W4A16_PATCH=0 vllm serve ...`(装了 patch 但运行时回退到 vllm 原生 triton,用于定位是否 aiter 引入的问题)。
 
-- **TPOT 比参考值(74ms)偏高 5~7ms**:大概率是 DCU 没锁频。按"三·5. 锁频检测"一节
+- **TPOT 比参考值(68ms)偏高 5~7ms**:大概率是 DCU 没锁频。按"三·5. 锁频检测"一节
   检查 `rocm-smi --showclocks | grep sclk`,没锁上就手动锁。
 
 - **换到新容器/新机器**:只要 `pip install aiter`(DCU 定制版)和 vllm 已装好,
