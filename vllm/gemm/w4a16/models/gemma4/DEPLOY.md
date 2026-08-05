@@ -104,6 +104,57 @@ HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 vllm bench serve \
 | 提升 | -23.6% | **-24.6%** | 持平 | **+31%** |
 
 环境:TP=4,MTP 投机解码(num_speculative_tokens=3),optimization-level 3。
+**前提:DCU 已锁频到 sclk 760MHz**(见下节,锁频不生效会导致 TPOT 偏高 5~7ms)。
+
+---
+
+## 三·5. 锁频检测与手动锁频(性能关键)
+
+DCU 默认按负载动态调频,decode 阶段负载低时频率会掉下来,导致 TPOT 偏高 5~7ms、
+吞吐掉 7% 左右。**必须把用的几张卡锁到 sclk level 6(760MHz)** 才能拿到上面参考表的性能。
+
+`start.sh` 启动时已自动锁频并打印确认,但某些容器环境下 rocm-smi 锁频会静默失败
+(权限不足、设备接口差异等),打印"锁频完成"实际却没锁上。所以装好后**务必检测一次**。
+
+### 检测锁频是否生效
+
+vllm 跑着的时候,另开一个终端:
+
+```bash
+rocm-smi --showclocks 2>&1 | grep sclk
+```
+
+正常输出(4 张卡都 level 6 / 760Mhz):
+```
+HCU[0] : sclk clock level: 6 (760Mhz)
+HCU[1] : sclk clock level: 6 (760Mhz)
+HCU[2] : sclk clock level: 6 (760Mhz)
+HCU[3] : sclk clock level: 6 (760Mhz)
+```
+
+异常表现(说明没锁上):
+- 没有 `sclk` 这一行,或显示 `level: 0 (300Mhz)`
+- `rocm-smi` 主表里 Perf 列是 `auto` 而非 `manual`
+
+### 手动锁频
+
+如果检测发现没锁上,手动锁(不需要重启 vllm,锁完直接 bench 即可):
+
+```bash
+for i in 0 1 2 3; do
+  rocm-smi -d $i --setperflevel manual
+  rocm-smi -d $i --setsclk 6
+done
+
+# 确认
+rocm-smi --showclocks 2>&1 | grep sclk
+```
+
+看到 4 张卡都 `Successfully set sclk frequency mask to Level 6` 即成功。
+锁完**不用重启 vllm**,直接再跑 bench,TPOT 应回落到 ~68ms。
+
+> 若手动锁频也报错(如 `Permission denied`、`Failed to set`),说明容器没有
+> rocm-smi 写权限。需在宿主机层面锁频(所有容器共享),或给容器加设备权限。
 
 ---
 
@@ -166,6 +217,9 @@ pass@1 达 97.56%,与该模型未打 patch 时的正常水平一致,确认 **ait
   `patch.sh install/revert` 已自动清缓存,只在手动切换环境变量时需要手动清。
 
 - **排查问题时想关掉 aiter**:`VLLM_AITER_W4A16_PATCH=0 vllm serve ...`(装了 patch 但运行时回退到 vllm 原生 triton,用于定位是否 aiter 引入的问题)。
+
+- **TPOT 比参考值(68ms)偏高 5~7ms**:大概率是 DCU 没锁频。按"三·5. 锁频检测"一节
+  检查 `rocm-smi --showclocks | grep sclk`,没锁上就手动锁。
 
 - **换到新容器/新机器**:只要 `pip install aiter`(DCU 定制版)和 vllm 已装好,
   重新 `git clone` 本仓库 + `./patch.sh install` 即可,无需拉 aiter 源码。
