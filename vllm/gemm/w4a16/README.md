@@ -1,63 +1,61 @@
-# gemma-4-31B-it-AWQ-4bit · aiter w4a16 GEMM 加速 patch
+# aiter w4a16 GEMM patch (通用)
 
 Hygon DCU BW10 (gfx936) 上,用 **aiter triton w4a16 kernel** 替换 vllm 自带 triton w4a16 kernel,
-针对 AWQ **group_size=32** 调优,端到端 TPOT 降低 ~25%,精度无损。
+提升 AWQ w4a16 推理性能,精度无损。
 
-## 性能对比 (端到端, vllm bench serve, 4 prompts × 5120 in / 1024 out)
+这是一套**通用机制**:kernel、vllm 接入、安装脚本与模型无关,适用于任何 AWQ w4a16 模型
+(group_size ∈ {32, 64, 128, -1})。**调优 config 按模型区分**,放在 `models/<model>/` 下。
 
-| 配置 | duration | TPOT | TTFT | acceptance |
-|------|----------|------|------|-----------|
-| baseline (vllm 原生 triton w4a16) | 94.45s | 90.72ms | 1.10s | 97.48% |
-| **aiter patch (gs=32, tuned)** | **71.03s** | **68.11ms** | 1.07s | 97.19% |
-
-- duration: 94.45s → 71.03s(**-24.8%**)
-- TPOT: 90.72ms → 68.11ms(**-24.9%**)
-- TTFT 基本持平
-- 精度: 离线 verify `cos_sim = 1.000000`;端到端 speculative acceptance 97.48% vs 97.19%,无下降
-
-环境: TP=4, attention-backend TRITON_ATTN, kv-cache-dtype fp8, optimization-level 3,
-MTP speculative decoding (num_speculative_tokens=3), max-num-batched-tokens 16384。
+> 目前已调优的模型见 `models/`。首个也是唯一一个:**gemma4**(gemma-4-31B-it-AWQ-4bit, gs=32),
+> 端到端 TPOT -25%。详见 [`models/gemma4/README.md`](models/gemma4/README.md)。
 
 ---
 
-## 文件清单
+## 目录结构
 
 ```
-gemm-optimize/gemma4/
-├── README.md                         # 本文件
-├── patch.sh                          # 一键安装 / 回退 / 查看状态
+gemm/w4a16/
+├── README.md                         # 本文件 (通用说明)
+├── patch.sh                          # 一键 install / revert / status / models
 ├── triton_w4a16.py                   # vllm 原始 triton_w4a16.py (回退用)
 ├── triton_w4a16.py.patch             # 打了 aiter patch 的 triton_w4a16.py
 ├── aiter_gemm_a16w4.py               # aiter triton w4a16 kernel (已修 triton3.5 兼容)
-├── configs/awq_w4a16/                # 调优后的 aiter config (gs=32, BW200, 10 个 shape)
-└── tests/                            # 验证 / 性能 / 调优脚本
-    ├── verify_aiter_v2.py            # 精度验证 (aiter vs vllm, cos_sim)
-    ├── verify_aiter_self.py          # aiter 自洽性验证
-    ├── bench_aiter_vs_vllm.py        # aiter vs vllm kernel 级性能对比
-    ├── tune_aiter_config.py          # config 参数扫描
-    ├── gen_aiter_configs.py          # 生成 config json
-    └── test_custom_op.py             # custom_op + torch.compile 兼容性测试
+├── tests/                            # 验证 / 性能 / 调优脚本 (通用)
+│   ├── verify_aiter_v2.py            # 精度验证 (aiter vs vllm, cos_sim)
+│   ├── verify_aiter_self.py          # aiter 自洽性验证
+│   ├── bench_aiter_vs_vllm.py        # aiter vs vllm kernel 级性能对比
+│   ├── tune_aiter_config.py          # config 参数扫描
+│   ├── gen_aiter_configs.py          # 生成 config json
+│   └── test_custom_op.py             # custom_op + torch.compile 兼容性测试
+└── models/                           # 按模型区分的调优 config
+    └── gemma4/
+        ├── README.md                 # gemma4 专属: shape / 性能数据 / 调优细节
+        └── configs/awq_w4a16/        # gemma4 的 10 个调优 config (gs=32, BW200)
 ```
+
+**通用 vs 模型专属**:
+- 通用(本目录根):`aiter_gemm_a16w4.py`(kernel)、`triton_w4a16.py.patch`(vllm 接入)、`patch.sh`、`tests/`
+  —— 换模型不用动
+- 模型专属(`models/<model>/`):`configs/`(按模型权重 shape 调优的 json)—— 换模型要重新调优
 
 ---
 
 ## 一键安装 / 回退
 
-用 `patch.sh` 一键操作(脚本内部会自动备份原始文件、放置 aiter kernel 和 config、清 torch.compile 缓存):
-
 ```bash
-cd gemm-optimize/gemma4
+cd gemm/w4a16
 
-./patch.sh install   # 安装 aiter patch (替换 vllm kernel + 放置 aiter kernel/config + 备份原始 + 清缓存)
-./patch.sh revert    # 回退到 vllm 原始 triton_w4a16.py (+ 清缓存)
-./patch.sh status    # 查看当前安装状态
+./patch.sh install [model]   # 安装 patch (默认 model=gemma4)
+./patch.sh revert            # 回退到 vllm 原始 triton_w4a16.py
+./patch.sh status [model]    # 查看当前安装状态 (默认 model=gemma4)
+./patch.sh models            # 列出可选的模型
 ```
 
 `install` 会:
-1. 备份当前 vllm `triton_w4a16.py` → `triton_w4a16.py.bak`(只备份一次)
+1. 备份当前 vllm `triton_w4a16.py` → `triton_w4a16.py.bak`(只备份一次,且不把 patch 版当原始版备份)
 2. 把 `triton_w4a16.py.patch` 拷到 vllm 安装目录
 3. 把 `aiter_gemm_a16w4.py` 放到 `$AITER_ROOT/aiter/ops/triton/`
-4. 把 `configs/awq_w4a16/*.json` 放到 `$AITER_ROOT/aiter/ops/triton/configs/gemm/awq_w4a16/`
+4. 把 `models/<model>/configs/awq_w4a16/*.json` 放到 `$AITER_ROOT/aiter/ops/triton/configs/gemm/awq_w4a16/`
 5. 清空 torch.compile 缓存(切换后必做)
 
 > 脚本顶部的 `VLLM_DIR` 和 `AITER_ROOT` 可按环境修改。
@@ -71,7 +69,7 @@ export AITER_ROOT=/public/home/weishb/aiter
 # 然后用你自己的 vllm serve 启动命令
 ```
 
-### 对比 baseline vs patch 的两种方式
+### 对比 baseline vs patch
 
 **方式 A(推荐,不换文件)**:都 `./patch.sh install`,靠环境变量切换:
 - `VLLM_AITER_W4A16_PATCH=1` → aiter patch
@@ -140,12 +138,23 @@ BW10 有 80 CUs。调优后关键参数:
 
 未调优的 aiter 默认 config 比 vllm 还慢 10-28%;调优后比 vllm 快 1.6-2.33x(kernel 级, M=4)。
 
+> 各模型的 shape 和具体 config 见 `models/<model>/README.md`。
+
+---
+
+## 为新模型添加调优
+
+1. 用 `tests/gen_aiter_configs.py` 生成新模型各层 shape 的 config 骨架
+2. 用 `tests/tune_aiter_config.py` 扫描调优(或参考 gemma4 的 config 手动设 SPLITK=2 等)
+3. 把调好的 config 放到 `models/<新模型>/configs/awq_w4a16/`
+4. `./patch.sh install <新模型>`
+
 ---
 
 ## 注意事项
 
-- **group_size=32**: 模型是 AWQ gs=32。aiter asm 路径(awq_gemm_asm)硬编码 gs=64,
-  改 gs=32 需重写汇编,且 gs=32→64 合并精度损失大(cos_sim 0.7-0.84),故走 triton 路径。
+- **group_size=32**: aiter asm 路径(awq_gemm_asm)硬编码 gs=64,改 gs=32 需重写汇编,
+  且 gs=32→64 合并精度损失大(cos_sim 0.7-0.84),故走 triton 路径。
 - **AITER_ROOT**: patch 用 importlib 绕过 aiter `__init__.py` 的 JIT 编译(ck_tile/core.hpp 找不到),
   只加载 `aiter.ops.triton` 子模块。`AITER_ROOT` 指向 aiter 仓库根目录。
 - **torch compile 缓存**: 切换 patch 开关或换文件后,若遇 `'_OpNamespace' 'aiter' object has no attribute ...`
