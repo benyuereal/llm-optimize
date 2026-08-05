@@ -24,7 +24,7 @@ gemma-4-31B-it-AWQ-4bit 在 Hygon DCU BW10 (gfx936) 上的 aiter w4a16 调优产
 - 吞吐: 43.37 → 56.80 tok/s(**+31%**)
 - TTFT 基本持平(1.10s vs 1.19s)
 - 精度: 离线 verify `cos_sim = 1.000000`(完全一致);端到端 speculative acceptance
-  97.48% vs 96.85%,**无下降**
+  97.48% vs 96.85%,**无下降**;HumanEval pass@1 = **97.56%**(164 题,evalscope 评测)
 
 环境: TP=4, attention-backend TRITON_ATTN, kv-cache-dtype fp8, optimization-level 3,
 MTP speculative decoding (num_speculative_tokens=3), max-num-batched-tokens 16384。
