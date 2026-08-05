@@ -55,7 +55,7 @@ def _load_aiter_gemm_mod():
     global _AITER_MOD
     if _AITER_MOD is not None:
         return _AITER_MOD
-    aiter_root = os.environ.get("AITER_ROOT", "/public/home/weishb/aiter")
+    aiter_root = os.environ.get("AITER_ROOT", "/usr/local/lib/python3.10/dist-packages")
     pkg = types.ModuleType("aiter")
     pkg.__path__ = [aiter_root + "/aiter"]
     pkg.__spec__ = importlib.util.spec_from_file_location(
@@ -180,7 +180,8 @@ def _aiter_preprocess_layer(layer, w_q_name, w_s_name, w_zp_name):
 
 
 # 模块加载时若启用 patch, 立即加载 aiter (在编译路径外)
-if os.environ.get("VLLM_AITER_W4A16_PATCH") == "1":
+# 默认启用 (装了 patch 就生效); 设 VLLM_AITER_W4A16_PATCH=0 可关掉走 vllm 原生 triton
+if os.environ.get("VLLM_AITER_W4A16_PATCH", "1") != "0":
     try:
         _load_aiter_gemm_mod()
     except Exception as e:
@@ -563,7 +564,7 @@ class TritonW4A16LinearKernel(MPLinearKernel):
         # ---- aiter gemm_a16w4: 模型加载时预处理权重并缓存 ----
         # 在 process_weights_after_loading (非编译路径) 完成, 使 apply_weights
         # 只需读缓存张量 + 调用 triton kernel, 对 torch.compile dynamo 友好
-        if os.environ.get("VLLM_AITER_W4A16_PATCH") == "1" and self.w_zp_name is not None:
+        if os.environ.get("VLLM_AITER_W4A16_PATCH", "1") != "0" and self.w_zp_name is not None:
             _aiter_preprocess_layer(layer, self.w_q_name, self.w_s_name,
                                     self.w_zp_name)
 

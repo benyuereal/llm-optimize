@@ -9,6 +9,11 @@ Hygon DCU BW10 (gfx936) 上,用 **aiter triton w4a16 kernel** 替换 vllm 自带
 > 目前已调优的模型见 `models/`。首个也是唯一一个:**gemma4**(gemma-4-31B-it-AWQ-4bit, gs=32),
 > 端到端 TPOT -25%。详见 [`models/gemma4/README.md`](models/gemma4/README.md)。
 
+**前置条件**:
+- vllm 0.23.0 DCU 定制版(`0.23.0+das.dtk2604`)
+- aiter DCU 定制版(`pip install aiter`,版本 `0.1.3+das.dtk2604` 即可,无需 aiter 源码仓库)
+- Hygon DCU BW10 (gfx936)
+
 ---
 
 ## 目录结构
@@ -62,17 +67,17 @@ cd gemm/w4a16
 
 ### 启动 vllm
 
-`patch.sh install` 只装文件,不启动 vllm。启动时需设置环境变量:
+`patch.sh install` 只装文件,不启动 vllm。**装了 patch 后默认就启用 aiter kernel**,
+直接用你原来的 `vllm serve` 命令启动即可,无需额外环境变量:
 ```bash
-export VLLM_AITER_W4A16_PATCH=1   # 1=启用 aiter kernel; 0 或 unset=走 vllm 原生 triton w4a16
-export AITER_ROOT=/public/home/weishb/aiter
-# 然后用你自己的 vllm serve 启动命令
+# AITER_ROOT 默认指向 pip aiter 安装位置 (/usr/local/lib/python3.10/dist-packages), 无需设置
+vllm serve /data/zq/models/gemma-4-31B-it-AWQ-4bit/ ...   # 你的启动命令
 ```
 
 ### 对比 baseline vs patch
 
 **方式 A(推荐,不换文件)**:都 `./patch.sh install`,靠环境变量切换:
-- `VLLM_AITER_W4A16_PATCH=1` → aiter patch
+- 不设 / 设 `VLLM_AITER_W4A16_PATCH=1` → aiter patch(默认)
 - `VLLM_AITER_W4A16_PATCH=0` → vllm 原生 triton w4a16(文件是 patch 版,但运行时不走 aiter 分支)
 
 切换环境变量后**必须清缓存再重启**:
@@ -113,7 +118,7 @@ HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 vllm bench serve \
 > 关键指标:`Mean TPOT (ms)`(per-output-token 延迟)、`Benchmark duration (s)`。
 
 对比流程:
-1. `./patch.sh install` + `VLLM_AITER_W4A16_PATCH=1` 启动 → bench → 记 patch 数据
+1. `./patch.sh install` → 直接启动 → bench → 记 patch 数据(默认启用)
 2. `VLLM_AITER_W4A16_PATCH=0` 重启(清缓存)→ bench → 记 baseline 数据
 3. 比 TPOT / duration(精度另用 `tests/verify_aiter_v2.py` 验 cos_sim)
 
@@ -186,8 +191,12 @@ BW10 有 80 CUs。调优后关键参数:
 
 - **group_size=32**: aiter asm 路径(awq_gemm_asm)硬编码 gs=64,改 gs=32 需重写汇编,
   且 gs=32→64 合并精度损失大(cos_sim 0.7-0.84),故走 triton 路径。
-- **AITER_ROOT**: patch 用 importlib 绕过 aiter `__init__.py` 的 JIT 编译(ck_tile/core.hpp 找不到),
-  只加载 `aiter.ops.triton` 子模块。`AITER_ROOT` 指向 aiter 仓库根目录。
+- **aiter 依赖**: 用环境里 `pip install aiter` 装的预编译版(DCU 定制版 `0.1.3+das.dtk2604`)即可,
+  **不需要 aiter 源码仓库**。`patch.sh install` 会覆盖 pip aiter 的 `gemm_a16w4.py`(改成 triton3.5 兼容版,
+  原版 `@triton.utils.jit` 在 triton 3.5 下会报错),并放置调优 config。
+  patch 代码用 importlib 只加载 `aiter.ops.triton` 子模块,不触发 aiter `__init__.py` 的其他依赖。
+- **AITER_ROOT**: 默认 `/usr/local/lib/python3.10/dist-packages`(pip aiter 位置)。
+  如 aiter 装在别处,设 `AITER_ROOT` 指向其父目录(使得 `$AITER_ROOT/aiter/ops/triton/...` 可达)。
 - **torch compile 缓存**: 切换 patch 开关或换文件后,若遇 `'_OpNamespace' 'aiter' object has no attribute ...`
   报错,是旧的编译缓存被复用了。`patch.sh install/revert` 已自动清缓存;手动切换环境变量时需自己清:
   ```bash
