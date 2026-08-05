@@ -86,6 +86,37 @@ rm -rf /root/.cache/vllm/torch_compile_cache /tmp/torchinductor_root
 ./patch.sh revert     # vllm 文件 = 原始版
 ```
 
+### 性能验证 (端到端 bench)
+
+用 `vllm bench serve` 对比 baseline 和 patch。启动 vllm 后,在另一终端跑:
+
+```bash
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 vllm bench serve \
+  --backend vllm \
+  --base-url http://localhost:8001 \
+  --model gemma4 \
+  --tokenizer /data/zq/models/gemma-4-31B-it-AWQ-4bit/ \
+  --dataset-name random \
+  --random-input-len 5120 \
+  --random-output-len 1024 \
+  --num-prompts 4 \
+  --seed 42
+```
+
+参数说明:
+- `--num-prompts 4`:小批量,聚焦 decode 阶段(w4a16 GEMM 的主战场)
+- `--seed 42`:固定随机输入,保证 baseline 和 patch 对比时输入完全一致
+- `--random-input-len 5120 --random-output-len 1024`:长输入长输出场景
+- `HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1`:避免 bench 工具连 HuggingFace
+
+> 第一次跑含 warmup(编译/图捕获),偏慢。**对比时取第二次稳态结果**,或连跑两轮看第二轮。
+> 关键指标:`Mean TPOT (ms)`(per-output-token 延迟)、`Benchmark duration (s)`。
+
+对比流程:
+1. `./patch.sh install` + `VLLM_AITER_W4A16_PATCH=1` 启动 → bench → 记 patch 数据
+2. `VLLM_AITER_W4A16_PATCH=0` 重启(清缓存)→ bench → 记 baseline 数据
+3. 比 TPOT / duration(精度另用 `tests/verify_aiter_v2.py` 验 cos_sim)
+
 ---
 
 ## 技术要点
