@@ -18,13 +18,27 @@ Claude Code → LiteLLM(协议转换) → vLLM(推理) → glm-5.2
 llm-optimize/
 ├── README.md            # 本文件
 ├── .gitignore
-└── proxy/               # 转发修复代理
-    ├── README.md        # proxy 模块详细文档（问题分析、原理、使用）
-    ├── llm_proxy.py     # 混合流式 + 修复代理（正式版）
-    ├── llm_proxy_v1.py  # 缓冲式修复代理（备用版）
-    ├── probe_proxy.py   # 探测版（调试用，抓取畸形样本）
-    └── requirements.txt # Python 依赖
+├── proxy/               # 转发修复代理
+│   ├── README.md        # proxy 模块详细文档（问题分析、原理、使用）
+│   ├── llm_proxy.py     # 混合流式 + 修复代理（正式版）
+│   ├── llm_proxy_v1.py  # 缓冲式修复代理（备用版）
+│   ├── probe_proxy.py   # 探测版（调试用，抓取畸形样本）
+│   └── requirements.txt # Python 依赖
+└── vllm/gemm/w4a16/     # aiter w4a16 GEMM 加速 (Hygon DCU)
+    ├── README.md        # 通用 patch 机制说明
+    ├── patch.sh         # 一键安装 / 回退
+    └── models/gemma4/   # gemma-4-31B-it-AWQ-4bit 调优 + 部署方案
+        └── DEPLOY.md    # ← 部署方案 (面向部署人员, 傻瓜式)
 ```
+
+## vLLM w4a16 GEMM 加速 (Hygon DCU)
+
+另一项优化:在 Hygon DCU BW10 (gfx936) 上,用 aiter triton w4a16 kernel 替换 vllm 自带 kernel,
+加速 gemma-4-31B-it-AWQ-4bit 推理,精度无损,端到端 TPOT -25%、吞吐 +31%。
+
+部署人员请直接看 [`vllm/gemm/w4a16/models/gemma4/DEPLOY.md`](vllm/gemm/w4a16/models/gemma4/DEPLOY.md)
+(下载 → 一键安装 → 性能验证 → 精度验证,四步完成)。
+通用机制说明见 [`vllm/gemm/w4a16/README.md`](vllm/gemm/w4a16/README.md)。
 
 ## 核心问题：MTP 导致工具调用参数结尾漂移
 

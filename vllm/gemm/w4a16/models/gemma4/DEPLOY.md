@@ -34,8 +34,11 @@ cd llm-optimize/vllm/gemm/w4a16
 ## 二. 一键安装
 
 ```bash
-./patch.sh install gemma4
+./patch.sh install
 ```
+
+> `install` 后面可跟模型名(如 `./patch.sh install gemma4`),指定用哪套调优 config。
+> 目前只有 gemma4 一个模型,也是默认值,所以可省略。
 
 这一条命令会自动完成:
 1. 备份 vllm 原始文件(用于回退)
@@ -47,7 +50,7 @@ cd llm-optimize/vllm/gemm/w4a16
 装好后查看状态确认:
 
 ```bash
-./patch.sh status gemma4
+./patch.sh status
 ```
 
 看到 `vllm triton_w4a16.py : aiter patch 版` 和 `gemma4 config : 10 / 10 个已放置` 即成功。
@@ -92,18 +95,6 @@ HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 vllm bench serve \
 > **第一轮含预热(编译/图捕获),偏慢,请连跑两轮,取第二轮稳态结果。**
 > 关键看 `Mean TPOT (ms)`(每 token 延迟)和 `Benchmark duration (s)`(总时长)。
 
-### 3. 跑 baseline 对比(可选)
-
-想确认加速效果,可关掉 aiter 再测一遍 baseline:
-
-```bash
-# 关掉 aiter, 走 vllm 原生 triton w4a16
-rm -rf /root/.cache/vllm/torch_compile_cache /tmp/torchinductor_root   # 必须清缓存
-VLLM_AITER_W4A16_PATCH=0 vllm serve /data/zq/models/gemma-4-31B-it-AWQ-4bit/ ...
-```
-
-启动后用同样的 bench 命令再测一次,对比两轮的 TPOT / duration。
-
 ### 参考性能数据(本方案实测,稳态第二轮)
 
 | 配置 | duration | TPOT | TTFT | 吞吐 (tok/s) |
@@ -133,7 +124,7 @@ evalscope eval \
   --work-dir ./outputs/
 ```
 
-结果在 `./outputs/` 下。对比 baseline 和 patch 的 pass@1,应基本一致。
+结果在 `./outputs/` 下,查看 pass@1 是否达到该模型正常水平即可。
 
 > 另有离线精度验证 `tests/verify_aiter_v2.py`,直接对比 aiter 与 vllm kernel 输出的 `cos_sim`,
 > 实测 **= 1.000000**(完全一致),从算子层确认精度无损。
@@ -159,11 +150,11 @@ evalscope eval \
   `rm -rf /root/.cache/vllm/torch_compile_cache /tmp/torchinductor_root` 后重启。
   `patch.sh install/revert` 已自动清缓存,只在手动切换环境变量时需要手动清。
 
-- **想临时关掉 aiter 做对比**:`VLLM_AITER_W4A16_PATCH=0 vllm serve ...`(装了 patch 但运行时不走 aiter)。
+- **排查问题时想关掉 aiter**:`VLLM_AITER_W4A16_PATCH=0 vllm serve ...`(装了 patch 但运行时回退到 vllm 原生 triton,用于定位是否 aiter 引入的问题)。
 
 - **换到新容器/新机器**:只要 `pip install aiter`(DCU 定制版)和 vllm 已装好,
-  重新 `git clone` 本仓库 + `./patch.sh install gemma4` 即可,无需拉 aiter 源码。
+  重新 `git clone` 本仓库 + `./patch.sh install` 即可,无需拉 aiter 源码。
 
 - **换别的 AWQ w4a16 模型**:kernel 和安装脚本是通用的,只需为该模型调优 config
   (放 `models/<新模型>/configs/awq_w4a16/`),再 `./patch.sh install <新模型>`。
-  详见 [`vllm/gemm/w4a16/README.md`](vllm/gemm/w4a16/README.md)。
+  详见 [`../../README.md`](../../README.md)。
