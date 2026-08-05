@@ -1,0 +1,162 @@
+{
+  "1": {
+    "USE_REDUCE_KERNEL": false,
+    "NUM_CUS": 80,
+    "SCHEDULER": 0,
+    "BLOCK_SIZE_M": 16,
+    "BLOCK_SIZE_N": 64,
+    "BLOCK_SIZE_K": 32,
+    "SPLITK": 2,
+    "num_warps": 4,
+    "num_ctas": 1,
+    "num_stages": 1,
+    "NUM_GROUPS": 1,
+    "DP_TILES": 0,
+    "DANGLING_TILES": 0,
+    "D_DTYPE": 32,
+    "D_SHAPE": [
+      1,
+      3584
+    ]
+  },
+  "2": {
+    "USE_REDUCE_KERNEL": false,
+    "NUM_CUS": 80,
+    "SCHEDULER": 0,
+    "BLOCK_SIZE_M": 16,
+    "BLOCK_SIZE_N": 64,
+    "BLOCK_SIZE_K": 32,
+    "SPLITK": 2,
+    "num_warps": 4,
+    "num_ctas": 1,
+    "num_stages": 1,
+    "NUM_GROUPS": 1,
+    "DP_TILES": 0,
+    "DANGLING_TILES": 0,
+    "D_DTYPE": 32,
+    "D_SHAPE": [
+      2,
+      3584
+    ]
+  },
+  "4": {
+    "USE_REDUCE_KERNEL": false,
+    "NUM_CUS": 80,
+    "SCHEDULER": 0,
+    "BLOCK_SIZE_M": 16,
+    "BLOCK_SIZE_N": 64,
+    "BLOCK_SIZE_K": 32,
+    "SPLITK": 2,
+    "num_warps": 4,
+    "num_ctas": 1,
+    "num_stages": 1,
+    "NUM_GROUPS": 1,
+    "DP_TILES": 0,
+    "DANGLING_TILES": 0,
+    "D_DTYPE": 32,
+    "D_SHAPE": [
+      4,
+      3584
+    ]
+  },
+  "8": {
+    "USE_REDUCE_KERNEL": false,
+    "NUM_CUS": 80,
+    "SCHEDULER": 0,
+    "BLOCK_SIZE_M": 16,
+    "BLOCK_SIZE_N": 64,
+    "BLOCK_SIZE_K": 32,
+    "SPLITK": 2,
+    "num_warps": 4,
+    "num_ctas": 1,
+    "num_stages": 1,
+    "NUM_GROUPS": 1,
+    "DP_TILES": 0,
+    "DANGLING_TILES": 0,
+    "D_DTYPE": 32,
+    "D_SHAPE": [
+      8,
+      3584
+    ]
+  },
+  "16": {
+    "USE_REDUCE_KERNEL": false,
+    "NUM_CUS": 80,
+    "SCHEDULER": 0,
+    "BLOCK_SIZE_M": 16,
+    "BLOCK_SIZE_N": 64,
+    "BLOCK_SIZE_K": 32,
+    "SPLITK": 2,
+    "num_warps": 4,
+    "num_ctas": 1,
+    "num_stages": 1,
+    "NUM_GROUPS": 1,
+    "DP_TILES": 0,
+    "DANGLING_TILES": 0,
+    "D_DTYPE": 32,
+    "D_SHAPE": [
+      16,
+      3584
+    ]
+  },
+  "32": {
+    "USE_REDUCE_KERNEL": false,
+    "NUM_CUS": 80,
+    "SCHEDULER": 0,
+    "BLOCK_SIZE_M": 16,
+    "BLOCK_SIZE_N": 64,
+    "BLOCK_SIZE_K": 32,
+    "SPLITK": 2,
+    "num_warps": 4,
+    "num_ctas": 1,
+    "num_stages": 1,
+    "NUM_GROUPS": 1,
+    "DP_TILES": 0,
+    "DANGLING_TILES": 0,
+    "D_DTYPE": 32,
+    "D_SHAPE": [
+      32,
+      3584
+    ]
+  },
+  "64": {
+    "USE_REDUCE_KERNEL": false,
+    "NUM_CUS": 80,
+    "SCHEDULER": 0,
+    "BLOCK_SIZE_M": 16,
+    "BLOCK_SIZE_N": 64,
+    "BLOCK_SIZE_K": 32,
+    "SPLITK": 2,
+    "num_warps": 4,
+    "num_ctas": 1,
+    "num_stages": 1,
+    "NUM_GROUPS": 1,
+    "DP_TILES": 0,
+    "DANGLING_TILES": 0,
+    "D_DTYPE": 32,
+    "D_SHAPE": [
+      64,
+      3584
+    ]
+  },
+  "128": {
+    "USE_REDUCE_KERNEL": false,
+    "NUM_CUS": 80,
+    "SCHEDULER": 0,
+    "BLOCK_SIZE_M": 16,
+    "BLOCK_SIZE_N": 64,
+    "BLOCK_SIZE_K": 32,
+    "SPLITK": 2,
+    "num_warps": 4,
+    "num_ctas": 1,
+    "num_stages": 1,
+    "NUM_GROUPS": 1,
+    "DP_TILES": 0,
+    "DANGLING_TILES": 0,
+    "D_DTYPE": 32,
+    "D_SHAPE": [
+      128,
+      3584
+    ]
+  }
+}
