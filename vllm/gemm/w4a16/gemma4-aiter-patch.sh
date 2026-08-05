@@ -226,7 +226,6 @@ case "${1:-}" in
     --gen-start) extract_archive; gen_start_script "${2:-./start.sh}" ;;
     "")
         extract_archive
-        local v
         v=$(which_version)
         if [ "$v" = "patch" ]; then
             warn "检测到 aiter patch 已安装, 跳过安装"
