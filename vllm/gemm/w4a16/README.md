@@ -4,10 +4,17 @@ Hygon DCU BW10 (gfx936) 上,用 **aiter triton w4a16 kernel** 替换 vllm 自带
 提升 AWQ w4a16 推理性能,精度无损。
 
 这是一套**通用机制**:kernel、vllm 接入、安装脚本与模型无关,适用于任何 AWQ w4a16 模型
-(group_size ∈ {32, 64, 128, -1})。**调优 config 按模型区分**,放在 `models/<model>/` 下。
+(group_size ∈ {32, 64, 128, -1}),**同时兼容对称量化 (uint4b8) 与非对称量化**。
+**调优 config 按模型区分**,放在 `models/<model>/` 下。
 
 > 目前已调优的模型见 `models/`。首个也是唯一一个:**gemma4**(gemma-4-31B-it-AWQ-4bit, gs=32),
 > 端到端 TPOT -25%。详见 [`models/gemma4/README.md`](models/gemma4/README.md)。
+
+**兼容性**:
+- **对称量化 (uint4b8, 无 zp 张量)**:patch 自动造全 8 zp,等价 `(w-8)*scale` ✅
+- **非对称量化 (有 zp 张量)**:用真实 zp ✅
+- **bf16 模型**:启动加 `--dtype float16` 对齐 aiter kernel 的 fp16 输出,精度/性能无损
+  (HumanEval pass@1 = 96.95%)。详见 [技术要点 2.2](#22-bf16-模型---dtype-float16-兼容关键)
 
 **前置条件**:
 - vllm 0.23.0 DCU 定制版(`0.23.0+das.dtk2604`)
@@ -23,12 +30,21 @@ gemm/w4a16/
 ├── README.md                         # 本文件 (通用说明)
 ├── patch.sh                          # 一键 install / revert / status / models
 ├── triton_w4a16.py                   # vllm 原始 triton_w4a16.py (回退用)
-├── triton_w4a16.py.patch             # 打了 aiter patch 的 triton_w4a16.py
-├── aiter_gemm_a16w4.py               # aiter triton w4a16 kernel (已修 triton3.5 兼容)
+├── triton_w4a16.py.patch             # 打了 aiter patch 的 triton_w4a16.py (兼容对称/非对称)
+├── aiter_gemm_a16w4.py               # aiter triton w4a16 kernel (原始 fp16 输出, 已修 triton3.5 兼容)
+├── aiter_gemm_a16w4_bf16.py          # [备份] bf16 输出改造 kernel (路B, 性能慢30% 已验证, 未启用)
+├── backup_path3/                     # [备份] 方案③: input bf16→fp16 桥接 + 保 bf16 权重
+│   ├── triton_w4a16.py.path3.patch   #   apply_weights 加 input 桥接的 patch
+│   └── aiter_gemm_a16w4_bf16.py      #   配套的 bf16 输出 kernel
 ├── tests/                            # 验证 / 性能 / 调优脚本 (通用)
 │   ├── verify_aiter_v2.py            # 精度验证 (aiter vs vllm, cos_sim)
 │   ├── verify_aiter_self.py          # aiter 自洽性验证
+│   ├── verify_symmetric_zp.py        # 对称量化 zp 兼容验证
 │   ├── bench_aiter_vs_vllm.py        # aiter vs vllm kernel 级性能对比
+│   ├── bench_bf16_kernel.py          # bf16 vs fp16 kernel 精度+性能对比
+│   ├── isolate_bf16_slow.py          # 定位 bf16 慢的根因 (隔离实验)
+│   ├── isolate_scales_dtype.py       # scales dtype 对性能影响
+│   ├── verify_path3_precision.py     # 方案③精度验证
 │   ├── tune_aiter_config.py          # config 参数扫描
 │   ├── gen_aiter_configs.py          # 生成 config json
 │   └── test_custom_op.py             # custom_op + torch.compile 兼容性测试
@@ -73,6 +89,15 @@ cd gemm/w4a16
 # AITER_ROOT 默认指向 pip aiter 安装位置 (/usr/local/lib/python3.10/dist-packages), 无需设置
 vllm serve /data/zq/models/gemma-4-31B-it-AWQ-4bit/ ...   # 你的启动命令
 ```
+
+> **bf16 模型必须加 `--dtype float16`**:
+> 对称量化模型通常是 bf16 权重,而 aiter kernel 硬编码 fp16 输出。不加会 `Half != BFloat16` 崩溃
+> (torch.compile / cudagraph 下尤甚)。加 `--dtype float16` 把全链路对齐 fp16 即可:
+> ```bash
+> vllm serve <bf16对称模型> --dtype float16 ...
+> ```
+> 该参数对 fp16 模型无影响(本来就是 fp16),所以**两种模型都加 `--dtype float16` 最安全**。
+> 生产脚本 `start.sh` 已内置此参数。
 
 ### 对比 baseline vs patch
 
@@ -154,11 +179,49 @@ torch.library.define(f"aiter::{op_name}", "(Tensor input, Tensor qweight, Tensor
 torch.library.impl(f"aiter::{op_name}", "CUDA")(_aiter_impl)
 @torch.library.register_fake(f"aiter::{op_name}")
 def _fake(input, qweight, scales, qzeros):
-    return torch.empty((input.shape[0], qweight.shape[0]), dtype=scales.dtype, device=input.device)
+    return torch.empty((input.shape[0], qweight.shape[0]), dtype=input.dtype, device=input.device)
 ```
 
 这样 vllm 的 torch.compile (opt-level 3) + cudagraph 能正常捕获(49 张图全捕获成功),
 aiter kernel 在图内执行,无 graph break。
+
+> `register_fake` 的输出 dtype 跟随 `input.dtype`。配合 `--dtype float16` 启动(见下节),
+> input 与 aiter kernel 输出同为 fp16,fake 声明与实际一致,无 dtype 不匹配。
+
+### 2.1 对称量化 (uint4b8) 兼容 (精度关键)
+
+aiter kernel 的 dequant 算式是 `(w - zeros) * scales`,**必须有 zeros 张量**。
+但对称量化 (uint4b8) 没有显式 zp 张量(零点恒为 8)。解法:模型加载时
+(`process_weights_after_loading`)对对称量化**造一个全 8 的 zp 张量**,使其等价于
+原生对称量化 `(w - 8) * scale`:
+
+```python
+# _aiter_preprocess_layer: 对称量化无 zp 时, 造全 zp_bias(8) 的 zp
+if w_zp is None:
+    # 8 个 4bit zp_bias pack 进一个 int32 = 0x88888888 (有符号 int32 = -2004318072)
+    packed_bias = zp_bias & 0xF
+    packed_bias = packed_bias | (packed_bias << 4) | ... | (packed_bias << 28)
+    w_zp = torch.full((K//G, N//8), packed_bias, dtype=torch.int32, device=...)
+```
+
+- 对称模型(无 zp):`zp_bias = weight_type.bias`(=8),造全 8 zp ✅
+- 非对称模型(有 zp):`zp_bias = 0`,用真实 zp ✅
+
+### 2.2 bf16 模型 + `--dtype float16` (兼容关键)
+
+aiter kernel 硬编码 fp16 输出。模型权重若是 bf16(如对称量化模型),不加处理会
+`Half != BFloat16` 崩溃(尤其在 torch.compile / cudagraph 下)。解法:启动加
+`--dtype float16`,把全链路强制 fp16,正好对上 aiter kernel 的原生 fp16 输出:
+
+```bash
+vllm serve <bf16模型> --dtype float16 ...
+```
+
+- 零 kernel 改动(用原始 fp16 kernel)
+- 绕过 `Half != BFloat16` 崩溃
+- 精度无损:该模型 scale max=2.1875、权重 max=53760(远低于 fp16 上限 65504),bf16→fp16 无溢出,
+  且 fp16 尾数(10位)比 bf16(7位)更细。HumanEval pass@1 = 96.95%(实测)
+- 性能无损:aiter fp16 全速,MTP 接受率 98%
 
 ### 3. aiter triton 3.5 兼容修复
 `aiter_gemm_a16w4.py` 相对 aiter 原版改了两处:
