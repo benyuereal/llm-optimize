@@ -144,7 +144,7 @@ def _make_aiter_launch_fn(N, K, G):
         @torch.library.register_fake(f"aiter::{op_name}")
         def _fake(input, qweight, scales, qzeros):
             return torch.empty((input.shape[0], qweight.shape[0]),
-                               dtype=scales.dtype, device=input.device)
+                               dtype=input.dtype, device=input.device)
     except Exception:
         pass
     op = getattr(torch.ops.aiter, op_name)
@@ -155,18 +155,34 @@ def _make_aiter_launch_fn(N, K, G):
     return _aiter_launch
 
 
-def _aiter_preprocess_layer(layer, w_q_name, w_s_name, w_zp_name):
+def _aiter_preprocess_layer(layer, w_q_name, w_s_name, w_zp_name, zp_bias=0):
     """模型加载时 (process_weights_after_loading) 预处理 aiter 权重并缓存到 layer。
-    非编译路径, 可自由使用动态逻辑。"""
+    非编译路径, 可自由使用动态逻辑。
+
+    zp_bias: 对称量化 (uint4b8) 的零点偏移, 通常为 8。对称量化无显式 zp 张量,
+    但 aiter kernel dequant 算式为 (w - zeros) * scales, 需要造一个全 zp_bias 的
+    zp 张量, 使其等价于原生对称量化 (w - 8) * scale。非对称量化 zp_bias=0。
+    """
     mod = _load_aiter_gemm_mod()
     w_q = getattr(layer, w_q_name)       # [K, N//8] int32 (GPTQ N-packed)
     w_s = getattr(layer, w_s_name)       # [K//G, N] fp16
     w_zp = getattr(layer, w_zp_name, None)  # [K//G, N//8] int32 (GPTQ N-packed); 对称量化可能无 zp
-    # 对称量化无 zp: 造全零 zp。kernel dequant 算式 (w-zp)*scale, zp=0 时 == w*scale,
-    # 与对称量化等价, 精度无损 (已用 verify_symmetric_zp.py 验证 cos_sim=1.0)。
+    # 对称量化无 zp: 造全 zp_bias 的 zp (每个 int32 pack 8 个 4bit zp_bias)。
+    # aiter dequant (w - zeros)*scales, zeros=zp_bias(8) 时 == (w-8)*scale,
+    # 与 uint4b8 对称量化等价。8 = 0b1000, 8 个 8 pack 成 0x88888888。
     if w_zp is None:
-        w_zp = torch.zeros((w_s.data.shape[0], w_q.data.shape[1]),
-                           dtype=torch.int32, device=w_q.data.device)
+        # 8 个 4bit zp_bias pack 进一个 int32: 0x88888888 (zp_bias=8 时)。
+        # 用 int32 负数表示避免 Python 大 int 溢出 (0x88888888 作为有符号 int32 = -2005315832)。
+        packed_bias = zp_bias & 0xF
+        packed_bias = packed_bias | (packed_bias << 4) | (packed_bias << 8) \
+            | (packed_bias << 12) | (packed_bias << 16) | (packed_bias << 20) \
+            | (packed_bias << 24) | (packed_bias << 28)
+        # 截断到 int32 有符号范围
+        packed_bias = packed_bias & 0xFFFFFFFF
+        if packed_bias >= 0x80000000:
+            packed_bias -= 0x100000000
+        w_zp = torch.full((w_s.data.shape[0], w_q.data.shape[1]),
+                          packed_bias, dtype=torch.int32, device=w_q.data.device)
     w_q_data = w_q.data if hasattr(w_q, "data") else w_q
     w_zp_data = w_zp.data if hasattr(w_zp, "data") else w_zp
     b_q_awq, qzeros_awq = _gptq_to_awq_packed(w_q_data, w_zp_data)
@@ -569,10 +585,12 @@ class TritonW4A16LinearKernel(MPLinearKernel):
         # ---- aiter gemm_a16w4: 模型加载时预处理权重并缓存 ----
         # 在 process_weights_after_loading (非编译路径) 完成, 使 apply_weights
         # 只需读缓存张量 + 调用 triton kernel, 对 torch.compile dynamo 友好
-        # 兼容对称/非对称: w_zp_name=None (对称) 时函数内造全零 zp, 照走 aiter 加速
+        # 兼容对称/非对称: 对称(uint4b8)无 zp 张量, 传 zp_bias(8) 让函数内造全 8
+        # zp, 使 aiter (w-zeros)*scales == (w-8)*scale 等价原生对称量化。
         if os.environ.get("VLLM_AITER_W4A16_PATCH", "1") != "0":
+            zp_bias = self.config.weight_type.bias if self.config.weight_type.has_bias() else 0
             _aiter_preprocess_layer(layer, self.w_q_name, self.w_s_name,
-                                    self.w_zp_name)
+                                    self.w_zp_name, zp_bias=zp_bias)
 
     def apply_weights(
         self, layer: torch.nn.Module, x: torch.Tensor, bias: torch.Tensor | None = None
@@ -587,6 +605,7 @@ class TritonW4A16LinearKernel(MPLinearKernel):
         if aiter_cache is not None:
             output = aiter_cache["launch"](x_2d, aiter_cache["aq"],
                                            aiter_cache["scales"], aiter_cache["az"])
+            # 直接返回 aiter 输出, 不做 dtype 转换
             if bias is not None:
                 output.add_(bias)
             return output.reshape(out_shape)
