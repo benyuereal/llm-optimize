@@ -254,9 +254,20 @@
  
 
 ##### 2/3  aiter gemm_a16w4.py (triton3.5 兼容) #####
+--- aiter/ops/triton/gemm_a16w4.py
++++ aiter/ops/triton/gemm_a16w4.py
+@@ -960,7 +960,7 @@
+ )
+ '''
+ 
+-@triton.utils.jit(key=["M", "N", "batch_size", "input_ptr"])
++@triton.jit
+ def awq_reduce_and_convert_kernel(
+     input_ptr,
+     output_ptr,
 
 ##### 3/3  aiter awq_w4a16 configs (新增) #####
---- /dev/null
+--- aiter/ops/triton/configs/gemm/awq_w4a16/awq_gemm_N=10752,K=5376,device_name=BW200,dtype=w4a16,group_size=32.json
 +++ aiter/ops/triton/configs/gemm/awq_w4a16/awq_gemm_N=10752,K=5376,device_name=BW200,dtype=w4a16,group_size=32.json
 @@ -0,0 +1,162 @@
 +{
@@ -422,7 +433,7 @@
 +  }
 +}
 \ No newline at end of file
---- /dev/null
+--- aiter/ops/triton/configs/gemm/awq_w4a16/awq_gemm_N=1344,K=14336,device_name=BW200,dtype=w4a16,group_size=32.json
 +++ aiter/ops/triton/configs/gemm/awq_w4a16/awq_gemm_N=1344,K=14336,device_name=BW200,dtype=w4a16,group_size=32.json
 @@ -0,0 +1,170 @@
 +{
@@ -596,7 +607,7 @@
 +    }
 +}
 \ No newline at end of file
---- /dev/null
+--- aiter/ops/triton/configs/gemm/awq_w4a16/awq_gemm_N=1344,K=5376,device_name=BW200,dtype=w4a16,group_size=32.json
 +++ aiter/ops/triton/configs/gemm/awq_w4a16/awq_gemm_N=1344,K=5376,device_name=BW200,dtype=w4a16,group_size=32.json
 @@ -0,0 +1,162 @@
 +{
@@ -762,7 +773,7 @@
 +  }
 +}
 \ No newline at end of file
---- /dev/null
+--- aiter/ops/triton/configs/gemm/awq_w4a16/awq_gemm_N=3584,K=5376,device_name=BW200,dtype=w4a16,group_size=32.json
 +++ aiter/ops/triton/configs/gemm/awq_w4a16/awq_gemm_N=3584,K=5376,device_name=BW200,dtype=w4a16,group_size=32.json
 @@ -0,0 +1,162 @@
 +{
@@ -928,7 +939,7 @@
 +  }
 +}
 \ No newline at end of file
---- /dev/null
+--- aiter/ops/triton/configs/gemm/awq_w4a16/awq_gemm_N=4096,K=5376,device_name=BW200,dtype=w4a16,group_size=32.json
 +++ aiter/ops/triton/configs/gemm/awq_w4a16/awq_gemm_N=4096,K=5376,device_name=BW200,dtype=w4a16,group_size=32.json
 @@ -0,0 +1,162 @@
 +{
@@ -1094,7 +1105,7 @@
 +  }
 +}
 \ No newline at end of file
---- /dev/null
+--- aiter/ops/triton/configs/gemm/awq_w4a16/awq_gemm_N=5120,K=5376,device_name=BW200,dtype=w4a16,group_size=32.json
 +++ aiter/ops/triton/configs/gemm/awq_w4a16/awq_gemm_N=5120,K=5376,device_name=BW200,dtype=w4a16,group_size=32.json
 @@ -0,0 +1,162 @@
 +{
@@ -1260,7 +1271,7 @@
 +  }
 +}
 \ No newline at end of file
---- /dev/null
+--- aiter/ops/triton/configs/gemm/awq_w4a16/awq_gemm_N=5376,K=14336,device_name=BW200,dtype=w4a16,group_size=32.json
 +++ aiter/ops/triton/configs/gemm/awq_w4a16/awq_gemm_N=5376,K=14336,device_name=BW200,dtype=w4a16,group_size=32.json
 @@ -0,0 +1,162 @@
 +{
@@ -1426,7 +1437,7 @@
 +  }
 +}
 \ No newline at end of file
---- /dev/null
+--- aiter/ops/triton/configs/gemm/awq_w4a16/awq_gemm_N=5376,K=2048,device_name=BW200,dtype=w4a16,group_size=32.json
 +++ aiter/ops/triton/configs/gemm/awq_w4a16/awq_gemm_N=5376,K=2048,device_name=BW200,dtype=w4a16,group_size=32.json
 @@ -0,0 +1,162 @@
 +{
@@ -1592,7 +1603,7 @@
 +  }
 +}
 \ No newline at end of file
---- /dev/null
+--- aiter/ops/triton/configs/gemm/awq_w4a16/awq_gemm_N=5376,K=4096,device_name=BW200,dtype=w4a16,group_size=32.json
 +++ aiter/ops/triton/configs/gemm/awq_w4a16/awq_gemm_N=5376,K=4096,device_name=BW200,dtype=w4a16,group_size=32.json
 @@ -0,0 +1,162 @@
 +{
@@ -1758,7 +1769,7 @@
 +  }
 +}
 \ No newline at end of file
---- /dev/null
+--- aiter/ops/triton/configs/gemm/awq_w4a16/awq_gemm_N=5376,K=5376,device_name=BW200,dtype=w4a16,group_size=32.json
 +++ aiter/ops/triton/configs/gemm/awq_w4a16/awq_gemm_N=5376,K=5376,device_name=BW200,dtype=w4a16,group_size=32.json
 @@ -0,0 +1,162 @@
 +{
