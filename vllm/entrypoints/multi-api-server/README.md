@@ -71,7 +71,7 @@ entrypoints/multi-api-server/
 ├── README.md                       # 本文件
 ├── patch.sh                        # 一键 install / revert / status (speech_to_text.py)
 ├── speech_to_text.py.orig          # vllm 原始版 (CRLF, 对齐海光定制版行尾)
-├── speech_to_text.py.patch         # 标准 diff patch (3 hunks)
+├── speech_to_text.py.patch         # 标准 diff patch (1 hunk: 音频解码 to_thread)
 ├── speech_to_text.py.patched       # 改后版
 ├── deploy/                         # 启动配置谱系 (按优化阶段编号)
 │   ├── 01_baseline.sh              #   原始 (带 profiler)
@@ -90,12 +90,10 @@ entrypoints/multi-api-server/
 
 ## speech_to_text.py patch (辅助改动)
 
-主优化 `--api-server-count` 零源码改动, 但探索中对 `speech_to_text.py` 做了两处辅助改动:
+主优化 `--api-server-count` 零源码改动, 但探索中对 `speech_to_text.py` 做了一处辅助改动:
 
-1. **音频解码 `asyncio.to_thread`**: `librosa.load` 用 `asyncio.to_thread` 移出 event loop,
-   避免阻塞单线程 event loop, 与多进程方案配合。
-2. **profile 埋点**: 受 `VLLM_ASR_PROFILE=1` 控制 (默认关, 零开销), 写
-   `/tmp/asr_route_prof.log`, 量 `preprocess` / `first_output` 耗时。
+- **音频解码 `asyncio.to_thread`**: `librosa.load` 用 `asyncio.to_thread` 移出 event loop,
+  避免阻塞单线程 event loop, 与多进程方案配合。
 
 ```bash
 ./patch.sh install    # 安装
@@ -114,9 +112,6 @@ cd entrypoints/multi-api-server && ./patch.sh install
 
 # 2. 用甜点配置启动 (1 引擎 + 4 API server, 单端口 8001)
 bash deploy/05_multi_api_server.sh
-
-# 想看耗时分 解:
-VLLM_ASR_PROFILE=1 bash deploy/05_multi_api_server.sh
 ```
 
 **前置条件**:

@@ -2,11 +2,9 @@
 # ============================================================
 # ASR speech_to_text.py patch · 一键安装 / 回退脚本
 #
-# 对 vllm 的 speech_to_text.py 做两处改动:
-#   1. 音频解码 (librosa.load) 用 asyncio.to_thread 移出 event loop
-#      —— 避免阻塞单线程 event loop, 与 --api-server-count 多进程配合
-#   2. 加 profile 埋点 (受 VLLM_ASR_PROFILE=1 控制, 默认关, 零开销)
-#      —— 写 /tmp/asr_route_prof.log, 量 preprocess / first_output 耗时
+# 对 vllm 的 speech_to_text.py 做一处改动:
+#   音频解码 (librosa.load) 用 asyncio.to_thread 移出 event loop
+#   —— 避免阻塞单线程 event loop, 与 --api-server-count 多进程配合
 #
 # 注意: 本 patch 只是 entrypoints 层的辅助改动。
 #       本项目的主优化是启动参数 --api-server-count (多 API server 进程,
@@ -78,7 +76,6 @@ do_install() {
     info "==== 安装完成 ===="
     echo
     echo "patch 已生效。配合 --api-server-count 启动 (见 deploy/05_multi_api_server.sh)。"
-    echo "profile 埋点默认关; 想看耗时分 解时设 VLLM_ASR_PROFILE=1 再启动。"
     echo
     echo "回退:  ./patch.sh revert"
 }
@@ -112,7 +109,7 @@ do_status() {
     echo "==== 当前状态 ===="
     local v; v=$(which_version)
     case "$v" in
-        patched)  info "speech_to_text.py : ${GREEN}patched 版${NC} (音频解码 to_thread + profile 埋点)" ;;
+        patched)  info "speech_to_text.py : ${GREEN}patched 版${NC} (音频解码 asyncio.to_thread)" ;;
         original) warn "speech_to_text.py : 原始版 (未打 patch)" ;;
         missing)  err  "speech_to_text.py : 不存在 ($VLLM_FILE)" ;;
         *)        warn "speech_to_text.py : 未知版本 (既非原始也非 patched, 可能被手动改过)" ;;
@@ -123,10 +120,6 @@ do_status() {
     else
         warn "原始备份不存在 (.bak)"
     fi
-
-    echo
-    echo "环境变量 (当前 shell):"
-    echo "  VLLM_ASR_PROFILE = ${VLLM_ASR_PROFILE:-(未设置, profile 关)}"
 }
 
 # ---------- main ----------
@@ -138,7 +131,7 @@ case "$ACTION" in
     *)
         echo "用法: $0 {install|revert|status}"
         echo
-        echo "  install  安装 patch (音频解码 to_thread + profile 埋点)"
+        echo "  install  安装 patch (音频解码 asyncio.to_thread)"
         echo "  revert   回退到 vllm 原始 speech_to_text.py"
         echo "  status   查看当前安装状态"
         exit 1

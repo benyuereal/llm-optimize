@@ -1,5 +1,5 @@
---- a/vllm/entrypoints/openai/speech_to_text/speech_to_text.py	2026-08-10 18:31:39.325386675 +0800
-+++ b/vllm/entrypoints/openai/speech_to_text/speech_to_text.py	2026-08-10 16:52:33.227475157 +0800
+--- a/vllm/entrypoints/openai/speech_to_text/speech_to_text.py
++++ b/vllm/entrypoints/openai/speech_to_text/speech_to_text.py
 @@ -213,8 +213,10 @@
          # NOTE resample to model SR here for efficiency. This is also a
          # pre-requisite for chunking, as it assumes Whisper SR.
@@ -13,40 +13,3 @@
          except sf.LibsndfileError as exc:
              # Only fall back for known format-detection failures.
              # Re-raise anything else (e.g. corrupt but recognised format).
-@@ -447,11 +449,18 @@
- 
-         lora_request = self._maybe_get_adapters(request)
- 
-+        import os as _os, time as _time
-+        _prof = _os.getenv("VLLM_ASR_PROFILE", "0") == "1"
-+        _t_pre = _time.perf_counter() if _prof else 0.0
-         engine_prompts, duration_s = await self._preprocess_speech_to_text(
-             request=request,
-             audio_data=audio_data,
-             request_id=request_id,
-         )
-+        if _prof:
-+            _t_post_pre = _time.perf_counter()
-+            with open("/tmp/asr_route_prof.log", "a") as _f:
-+                _f.write(f"preprocess={(_t_post_pre-_t_pre)*1000:.1f}ms\n")
- 
-         # Schedule the request and get the result generator.
-         max_model_len = self.model_config.max_model_len
-@@ -633,9 +642,17 @@
-         )
- 
-         try:
-+            import os as _os, time as _time
-+            _prof = _os.getenv("VLLM_ASR_PROFILE", "0") == "1"
-+            _t_gen = _time.perf_counter() if _prof else 0.0
-+            _first_out = True
-             for result_generator in list_result_generator:
-                 async for res in result_generator:
-                     # On first result.
-+                    if _prof and _first_out:
-+                        _first_out = False
-+                        with open("/tmp/asr_route_prof.log", "a") as _f:
-+                            _f.write(f"first_output={(_time.perf_counter()-_t_gen)*1000:.1f}ms\n")
-                     if res.prompt_token_ids is not None:
-                         num_prompt_tokens = len(res.prompt_token_ids)
-                         if audio_tokens := self.model_cls.get_num_audio_tokens(
