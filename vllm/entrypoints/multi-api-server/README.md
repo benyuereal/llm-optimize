@@ -76,11 +76,8 @@ entrypoints/multi-api-server/
 ├── deploy/                         # 启动配置谱系 (按优化阶段编号)
 │   ├── 01_baseline.sh              #   原始 (带 profiler)
 │   ├── 02_maxnumseqs128.sh         #   --max-num-seqs 128
-│   ├── 03_rocm_transpose_weight.sh #   + VLLM_ROCM_TRANSPOSE_WEIGHT=1
-│   ├── 04_fp8kv_rejected.sh        #   FP8 KV cache (实测变慢 7%, 已否决, 留存对照)
+│   ├── 03_rocm_transpose_weight.sh #   + VLLM_ROCM_TRANSPOSE_WEIGHT=1 (原生环境变量, 无源码改动)
 │   └── 05_multi_api_server.sh      #   ★ 甜点: --api-server-count 4 (当前生产)
-├── middleware/
-│   └── asr_timing_mw.py            # 计时中间件 (量 mw_total, 受 VLLM_ASR_PROFILE 控制)
 └── bench/                          # 基准与正确性验证
     ├── bench_decompose.py          #   c=70 拆分 upload/server/decode/total (requests 客户端)
     ├── verify_concurrent.py        #   70 并发输出一致性验证
@@ -126,5 +123,4 @@ bash deploy/05_multi_api_server.sh
 | 线程池并行 multipart 解析 | ✗ | python-multipart 纯 Python GIL-bound, 线程池无法并行, 反引入超时 |
 | nginx 软多实例 (同卡多端口) | ✗ | 验证思路 OK 但不能交付 (要外部组件), `--api-server-count` 更优雅 |
 | data parallel (DP) | ✗ | 只有一张卡 |
-| FP8 KV cache (`--kv-cache-dtype fp8`) | ✗ | 实测变慢 7%, dequant 开销 > 带宽收益 |
 | GPU 做音频解码 | ✗ | WAV 是解析非压缩解码, CPU 5ms 足够; GPU ffmpeg 场景不适用 |
