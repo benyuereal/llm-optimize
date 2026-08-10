@@ -73,11 +73,9 @@ entrypoints/multi-api-server/
 ├── speech_to_text.py.orig          # vllm 原始版 (CRLF, 对齐海光定制版行尾)
 ├── speech_to_text.py.patch         # 标准 diff patch (1 hunk: 音频解码 to_thread)
 ├── speech_to_text.py.patched       # 改后版
-├── deploy/                         # 启动配置谱系 (按优化阶段编号)
-│   ├── 01_baseline.sh              #   原始 (带 profiler)
-│   ├── 02_maxnumseqs128.sh         #   --max-num-seqs 128
-│   ├── 03_rocm_transpose_weight.sh #   + VLLM_ROCM_TRANSPOSE_WEIGHT=1 (原生环境变量, 无源码改动)
-│   └── 05_multi_api_server.sh      #   ★ 甜点: --api-server-count 4 (当前生产)
+├── deploy/                         # 启动配置
+│   ├── 01_baseline.sh              #   原始 baseline (带 profiler, A/B 对照用)
+│   └── 05_multi_api_server.sh      #   ★ 生产: 囊括全部优化, --api-server-count 4
 └── bench/                          # 基准与正确性验证
     ├── bench_decompose.py          #   c=70 拆分 upload/server/decode/total (requests 客户端)
     ├── verify_concurrent.py        #   70 并发输出一致性验证
