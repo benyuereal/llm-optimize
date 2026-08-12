@@ -7,8 +7,9 @@ Hygon DCU BW10 (gfx936) 上,用 **aiter triton w4a16 kernel** 替换 vllm 自带
 (group_size ∈ {32, 64, 128, -1}),**同时兼容对称量化 (uint4b8) 与非对称量化**。
 **调优 config 按模型区分**,放在 `models/<model>/` 下。
 
-> 目前已调优的模型见 `models/`。首个也是唯一一个:**gemma4**(gemma-4-31B-it-AWQ-4bit, gs=32),
-> 端到端 TPOT -25%。详见 [`models/gemma4/README.md`](models/gemma4/README.md)。
+> 目前已调优的模型见 `models/`。首个也是唯一一个:**gemma4**(gemma-4-31B-it-AWQ-4bit, gs=32)。
+> 阶段一(aiter w4a16)端到端 TPOT -25%;叠加阶段二(flash attn,见 `vllm/flash-attn/`)后 TPOT -61%、
+> 吞吐 +147%。两阶段完整部署见 [`models/gemma4/README.md`](models/gemma4/README.md)。
 
 **兼容性**:
 - **对称量化 (uint4b8, 无 zp 张量)**:patch 自动造全 8 zp,等价 `(w-8)*scale` ✅
@@ -40,7 +41,7 @@ aiter-w4a16/
 │   └── test_custom_op.py             # custom_op + torch.compile 兼容性测试
 └── models/                           # 按模型区分的调优 config
     └── gemma4/
-        ├── README.md                 # gemma4 专属: shape / 性能数据 / 调优细节
+        ├── README.md                 # gemma4 专属: 部署(两阶段) / shape / 性能 / 调优 config
         └── configs/awq_w4a16/        # gemma4 的 10 个调优 config (gs=32, BW200)
 ```
 

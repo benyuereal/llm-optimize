@@ -2,7 +2,7 @@
 
 > 第二阶段优化：让 MTP draft 模型的 full_attention 层 (head_dim=512) 走 flash mixed kernel，替代慢的 aiter 2D kernel。
 >
-> **效果**：batch 4 TPOT 35.63ms（triton 基准 ~79ms，**1.68~2x 加速**），MTP 接受率 96.18%（精度无损）。
+> **效果**：batch 4 TPOT 35.02ms（triton 基准 ~79ms，**~2.25x 加速**），MTP 接受率 98.08%、接受长度 3.94（精度无损）。
 
 ## 硬件 / 软件前提
 
@@ -62,14 +62,18 @@ python3 -m vllm.entrypoints.openai.api_serving_benchmark \
     --prompt-len 1024 --output-len 1024
 ```
 
-基准结果（本环境实测）：
+基准结果（本环境实测，4 并发，1024 input + 1024 output）：
 
 | 指标 | triton 基准 | flash (本优化) | 提升 |
 |------|-----------|--------------|------|
-| Mean TPOT (ms) | ~79 | **35.63** | **2.2x** |
-| Median TPOT (ms) | ~79 | **35.68** | 2.2x |
-| MTP 接受率 (%) | ~96 | **96.18** | 持平 |
-| 接受长度 | ~3.8 | **3.89** | 持平 |
+| Mean TPOT (ms) | ~79 | **35.02** | **~2.25x** |
+| Median TPOT (ms) | ~79 | **34.81** | ~2.25x |
+| P99 TPOT (ms) | — | **36.16** | — |
+| Mean TTFT (ms) | — | **2192** | — |
+| Output 吞吐 (tok/s) | — | **107.02** | — |
+| MTP 接受率 (%) | ~96 | **98.08** | 持平/略升 |
+| 接受长度 (mean) | ~3.8 | **3.94** | 持平/略升 |
+| 位置0/1/2 接受率 (%) | — | **98.56 / 97.98 / 97.69** | — |
 
 **精度**：
 
@@ -92,4 +96,4 @@ gemma-4 MTP draft 模型有 `full_attention` 层，global_head_dim=512，num_glo
 原来走 aiter 的 2D attention kernel（head_dim=512 时很慢）。本优化扩展 flash-attention-cutlass
 的 fp8 mixed kernel，使其支持 head_dim=512 的 prefix decode + prefix prefill，draft 侧改走 flash。
 
-详细改动见上级目录 `flash_fp8e5m2_512.md`。
+详细改动见 [`flash-attention-cutlass/README.md`](../../../../flash-attention-cutlass/README.md) 的"改动详情"章节。

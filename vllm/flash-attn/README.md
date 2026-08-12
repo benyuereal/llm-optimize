@@ -2,7 +2,7 @@
 
 > 优化 gemma-4 MTP draft 模型 full_attention 层的 attention kernel。
 >
-> **batch 4 TPOT 35.63ms（triton 基准 ~79ms，1.68~2.2x 加速），MTP 接受率 96.18%，精度无损（HumanEval 96.95% 与 triton 一致）。**
+> **batch 4 TPOT 35.02ms（triton 基准 ~79ms，~2.25x 加速），MTP 接受率 98.08%、接受长度 3.94，精度无损（HumanEval 96.95% 与 triton 一致）。**
 
 ## 背景
 
@@ -40,7 +40,6 @@ vllm/flash-attn/
 ├── flash-attn.patch                   # flash-attention-cutlass 源码改动 patch (编译 whl 用, 已含在 dist/whl 里)
 ├── flash_fp8e5m2.patch                # vllm 侧 fp8_e5m2 patch (改 3 个 vllm 文件, install 时自动打)
 ├── flash_aiter_fp8e5m2.patch          # aiter 侧 fp8_e5m2 patch (改 unified_attention.py, install 时自动打)
-├── flash_fp8e5m2_512.md               # flash 源码改动详细说明（两层改动, 19 文件）
 ├── dist/                              # whl 不入库, 从 GitHub Release 下载放到此
 │   └── flash_attn-2.8.3+das.opt1.dtk2604-cp310-cp310-linux_x86_64.whl  # 安装产物
 └── models/gemma4/
@@ -68,7 +67,8 @@ bash models/gemma4/start_flash.sh
 本阶段改三层：
 
 1. **flash-attention-cutlass 源码**（与 vllm 同级目录，不在本目录）—— 新增 fp8_e5m2
-   mixed kernel + head_dim=512 prefill 符号，编译成 whl。改动见 `flash_fp8e5m2_512.md`，
+   mixed kernel + head_dim=512 prefill 符号，编译成 whl。改动详见
+   [`../flash-attention-cutlass/README.md`](../../flash-attention-cutlass/README.md) 的"改动详情"章节，
    对应 patch 文件 `flash-attn.patch`。**已包含在 `dist/` 的 whl 里**，用户无需再编译，
    只需从 GitHub Release 下载 whl 即可。
 
