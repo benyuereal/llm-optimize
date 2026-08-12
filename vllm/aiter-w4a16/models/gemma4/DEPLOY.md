@@ -107,8 +107,15 @@ bash start_flash.sh
 | `HIP_VISIBLE_DEVICES` | 0,1,2,3 | **0,4,2,3** |
 | 环境变量 | VLLM_AITER_W4A16_PATCH=1 | +ATTN_FLASH_PREFILL=1 +ATTN_FLASH_HEAD512=1 |
 
-> 脚本里 `MODEL_DIR` 和 `--speculative-config` 的模型路径默认 `/data/zq/models/...`,
-> 若你的模型路径不同,设环境变量 `MODEL_DIR=/your/path` 再启动,或直接改脚本。
+> 脚本里模型路径默认 `/data/zq/models/...`,若你的模型路径不同,用环境变量覆盖:
+> ```bash
+> # 主模型 + draft 自动推导为主模型同父目录下的 gemma-4-31B-it-assistant
+> MODEL_DIR=/your/path/to/gemma-4-31B-it-AWQ-4bit bash start_flash.sh
+>
+> # 或单独指定 draft 模型路径
+> MODEL_DIR=/your/main DRAFT_MODEL_DIR=/your/draft bash start_flash.sh
+> ```
+> 也可直接改脚本里的默认值。
 
 等到日志出现 `Application startup complete`、`Uvicorn running on ...` 表示就绪。
 启动成功应看到 draft 模型 head512 的 `full_attention` 走 flash kernel(不再是 aiter 2D)、

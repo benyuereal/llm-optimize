@@ -27,9 +27,13 @@ export ATTN_FLASH_PREFILL=1
 export ATTN_FLASH_HEAD512=1  # draft模型head_size=512也走flash  # prefill也走flash (gemma4 fp8 KV已验证cos0.9986, 2.6-3.3x faster)
 
 MODEL_DIR=${MODEL_DIR:-/data/zq/models/gemma-4-31B-it-AWQ-4bit/}
+# MTP draft 模型路径: 默认与主模型同父目录下的 gemma-4-31B-it-assistant
+# 可用 DRAFT_MODEL_DIR 环境变量覆盖
+DRAFT_MODEL_DIR=${DRAFT_MODEL_DIR:-$(dirname "$MODEL_DIR")/gemma-4-31B-it-assistant}
 
 echo "[start_flash.sh] 启动 vllm serve (TP=4, FLASH + fp8_e5m2 KV)..."
 echo "[start_flash.sh] 模型: $MODEL_DIR"
+echo "[start_flash.sh] draft: $DRAFT_MODEL_DIR"
 vllm serve "$MODEL_DIR" \
     --host 0.0.0.0 \
     --port 8001 \
@@ -45,9 +49,8 @@ vllm serve "$MODEL_DIR" \
     --trust-remote-code \
     --enable-prefix-caching \
     --enable-chunked-prefill \
-    --enable-log-requests \
     --language-model-only \
     --async-scheduling \
     --performance-mode throughput \
     --max-num-batched-tokens 16384 \
-    --speculative-config '{"method": "mtp", "model": "/data/zq/models/gemma-4-31B-it-assistant", "num_speculative_tokens": 3}'
+    --speculative-config "{\"method\": \"mtp\", \"model\": \"$DRAFT_MODEL_DIR\", \"num_speculative_tokens\": 3}"
