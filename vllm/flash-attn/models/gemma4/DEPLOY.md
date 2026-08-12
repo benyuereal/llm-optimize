@@ -17,14 +17,14 @@
 whl 体积较大（200M），不随仓库分发，放在 GitHub Release 附件。先下载：
 
 1. 到本仓库 GitHub Release 页面，下载 `flash_attn-2.8.3+das.opt1.dtk2604-cp310-cp310-linux_x86_64.whl`
-2. 放到 `vllm/attn/flash/dist/` 目录下
+2. 放到 `vllm/flash-attn/dist/` 目录下
 
 > 若已有 whl 在别处，也可不放进 dist，安装时指定：`WHL=/path/to/flash_attn-*.whl bash patch.sh install`
 
 ### 第 1 步 · 安装 flash_attn whl
 
 ```bash
-cd /path/to/llm-optimize/vllm/attn/flash
+cd /path/to/llm-optimize/vllm/flash-attn
 bash patch.sh install
 ```
 

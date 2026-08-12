@@ -37,7 +37,7 @@ llm-optimize/
     │   ├── patch.sh     # 一键安装 / 回退
     │   └── models/gemma4/   # gemma-4-31B-it-AWQ-4bit 调优 + 部署方案
     │       └── DEPLOY.md    # ← 部署方案 (面向部署人员, 傻瓜式)
-    └── attn/flash/      # 第二阶段: flash fp8 KV + head_dim=512 加速 (部署视角)
+    └── flash-attn/      # 第二阶段: flash fp8 KV + head_dim=512 加速 (部署视角)
         ├── README.md    # 通用说明
         ├── patch.sh     # 一键安装 / 回退
         ├── flash_fp8e5m2_512.patch   # 源码改动 patch
@@ -62,8 +62,8 @@ gemma-4 的 MTP draft 模型有个 `full_attention` 层 (head_dim=512), 原来�
 效果: batch 4 TPOT 35.63ms (triton 基准 ~79ms, **1.68~2.2x 加速**), MTP 接受率 96.18%, 精度无损 (HumanEval 96.95% 与 triton 一致)。
 与第一阶段 w4a16 互不冲突, 可叠加。
 
-部署人员请直接看 [`vllm/attn/flash/models/gemma4/DEPLOY.md`](vllm/attn/flash/models/gemma4/DEPLOY.md)。
-通用机制说明见 [`vllm/attn/flash/README.md`](vllm/attn/flash/README.md)。
+部署人员请直接看 [`vllm/flash-attn/models/gemma4/DEPLOY.md`](vllm/flash-attn/models/gemma4/DEPLOY.md)。
+通用机制说明见 [`vllm/flash-attn/README.md`](vllm/flash-attn/README.md)。
 
 ## 核心问题：MTP 导致工具调用参数结尾漂移
 

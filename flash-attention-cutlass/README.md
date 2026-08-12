@@ -14,13 +14,13 @@
 测试条件：TP4 + MTP(num_spec=3)，batch 4 (input 1024 / output 1024)。
 （早期单次对比 TPOT 47.50ms vs 79.68ms = 1.68x；batch4 稳态 35.63ms = 2.2x。）
 
-## 与 vllm/attn/flash/ 的关系
+## 与 vllm/flash-attn/ 的关系
 
 本目录是 **flash-attention-cutlass 源码 patch 的归属目录**（源码改了哪些、怎么编译）。
-部署产物和一键安装脚本在 [`vllm/attn/flash/`](../vllm/attn/flash/)（客户直接用那个安装）。
+部署产物和一键安装脚本在 [`vllm/flash-attn/`](../vllm/flash-attn/)（客户直接用那个安装）。
 两边的 patch / whl / new_files 内容一致，只是组织视角不同：
 - 本目录 = 源码视角（patch 怎么来的、怎么重新编译）
-- `vllm/attn/flash/` = 部署视角（whl 怎么装、服务怎么起、性能怎么验）
+- `vllm/flash-attn/` = 部署视角（whl 怎么装、服务怎么起、性能怎么验）
 
 ## 快速安装（客户直接用）
 

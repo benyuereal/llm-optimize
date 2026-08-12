@@ -27,14 +27,14 @@ gemma-4-31B-it-AWQ 的 MTP draft 模型有一个 `full_attention` 层：
 | 阶段 | 目录 | 优化对象 | 效果 |
 |------|------|---------|------|
 | 第一阶段 | `vllm/gemm/w4a16/` | aiter triton w4a16 GEMM 替换 vllm 自带 kernel | TPOT 1.2~1.8x |
-| **第二阶段** | **`vllm/attn/flash/`** | **flash fp8 KV + head_dim=512 替换 aiter 2D attention** | **draft full_attention 1.68~2.2x** |
+| **第二阶段** | **`vllm/flash-attn/`** | **flash fp8 KV + head_dim=512 替换 aiter 2D attention** | **draft full_attention 1.68~2.2x** |
 
 两个阶段互不冲突，可叠加。本阶段在第一阶段基础上叠加。
 
 ## 目录结构
 
 ```
-vllm/attn/flash/
+vllm/flash-attn/
 ├── README.md                          # 本文件
 ├── patch.sh                           # 一键安装/回退/状态
 ├── flash_fp8e5m2_512.patch            # 源码改动 patch（相对 flash-attention-cutlass）
