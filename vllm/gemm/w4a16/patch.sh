@@ -7,7 +7,7 @@
 #
 # 用法:
 #   ./patch.sh install [model]   # 安装 patch (默认 model=gemma4)
-#   ./patch.sh revert            # 回退到 vllm 原始 triton_w4a16.py
+#   ./patch.sh revert            # 回退 (patch -R)
 #   ./patch.sh status [model]    # 查看当前安装状态 (默认 model=gemma4)
 #   ./patch.sh models            # 列出可选的模型
 #
@@ -15,18 +15,24 @@
 #   ./patch.sh install           # 装 patch, 用 gemma4 的 config
 #   ./patch.sh install gemma4    # 同上 (显式指定)
 #   ./patch.sh status gemma4
+#
+# 原理: 用 patch 命令把 gemma4-aiter.patch 打到 vllm + aiter 安装目录。
+#   install = patch -p0 < gemma4-aiter.patch
+#   revert  = patch -p0 -R < gemma4-aiter.patch
 # ============================================================
 set -e
 
 # ---------- 路径配置 (按需修改) ----------
+# vllm + aiter 安装根目录 (pip 装的位置; patch 在此目录下 -p0 执行)
+DIST_DIR=/usr/local/lib/python3.10/dist-packages
+
 # vllm 安装目录里的 triton_w4a16.py 所在路径
-VLLM_DIR=/usr/local/lib/python3.10/dist-packages/vllm/model_executor/kernels/linear/mixed_precision
+VLLM_DIR=$DIST_DIR/vllm/model_executor/kernels/linear/mixed_precision
 
-# aiter 包安装路径 (pip install aiter 装的位置; patch 会覆盖其中的 kernel)
-# 注: 不需要完整 aiter 源码仓库, 用 pip 装的预编译 aiter 即可
-AITER_PKG_DIR=/usr/local/lib/python3.10/dist-packages/aiter
+# aiter 包安装路径 (pip install aiter 装的位置)
+AITER_PKG_DIR=$DIST_DIR/aiter
 
-# 本脚本所在目录 (patch 文件 + models/ 就在这里)
+# 本脚本所在目录 (gemma4-aiter.patch + models/ 就在这里)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ----------------------------------------
 
@@ -34,11 +40,11 @@ DEFAULT_MODEL=gemma4
 MODELS_DIR="$SCRIPT_DIR/models"
 
 VLLM_FILE="$VLLM_DIR/triton_w4a16.py"
-ORIG="$SCRIPT_DIR/triton_w4a16.py"          # vllm 原始版
-PATCH="$SCRIPT_DIR/triton_w4a16.py.patch"   # aiter patch 版
-AITER_KERNEL="$SCRIPT_DIR/aiter_gemm_a16w4.py"  # 改过 triton3.5 兼容的 kernel
 AITER_KERNEL_DST="$AITER_PKG_DIR/ops/triton/gemm_a16w4.py"
 AITER_CFG_DIR="$AITER_PKG_DIR/ops/triton/configs/gemm/awq_w4a16"
+
+# patch 文件 (3 段合一: vllm triton_w4a16 + aiter kernel + configs)
+PATCH_FILE="$SCRIPT_DIR/gemma4-aiter.patch"
 
 # 颜色
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
@@ -51,16 +57,14 @@ ACTION="${1:-}"
 MODEL="${2:-$DEFAULT_MODEL}"
 CONFIG_DIR="$MODELS_DIR/$MODEL/configs/awq_w4a16"
 
-# 判断当前 vllm 装的是哪一版
+# 判断当前是否已打 patch (检查 triton_w4a16.py 是否含 aiter 标记)
 which_version() {
     if [ ! -f "$VLLM_FILE" ]; then
         echo "missing"
-    elif diff -q "$VLLM_FILE" "$PATCH" >/dev/null 2>&1; then
+    elif grep -q "_aiter_preprocess_layer" "$VLLM_FILE" 2>/dev/null; then
         echo "patch"
-    elif diff -q "$VLLM_FILE" "$ORIG" >/dev/null 2>&1; then
-        echo "original"
     else
-        echo "unknown"
+        echo "original"
     fi
 }
 
@@ -75,51 +79,39 @@ clear_compile_cache() {
 do_install() {
     info "==== 安装 aiter w4a16 patch (模型: $MODEL) ===="
 
-    # 0. 检查源文件
-    for f in "$PATCH" "$AITER_KERNEL"; do
-        if [ ! -e "$f" ]; then err "找不到 $f"; exit 1; fi
-    done
+    # 0. 检查
+    if [ ! -f "$PATCH_FILE" ]; then err "找不到 patch 文件: $PATCH_FILE"; exit 1; fi
     if [ ! -d "$VLLM_DIR" ]; then err "vllm 目录不存在: $VLLM_DIR"; exit 1; fi
-    if [ ! -d "$CONFIG_DIR" ]; then
-        err "找不到模型 config 目录: $CONFIG_DIR"
-        echo "可用模型:"; do_models; exit 1
-    fi
     if [ ! -d "$AITER_PKG_DIR" ]; then
         err "aiter 包不存在: $AITER_PKG_DIR"
         echo "请先 pip install aiter (DCU 定制版), 或修改脚本顶部的 AITER_PKG_DIR"; exit 1
     fi
 
-    # 1. 备份当前 vllm 原始 triton_w4a16.py (只备份一次, 且不备份 patch 版)
-    if [ ! -f "$VLLM_FILE.bak" ]; then
-        if diff -q "$VLLM_FILE" "$PATCH" >/dev/null 2>&1; then
-            warn "当前 vllm 文件已是 patch 版, 跳过备份 (.bak 用 repo 的原始版替代)"
-        else
-            cp "$VLLM_FILE" "$VLLM_FILE.bak"
-            info "已备份原始文件 -> $VLLM_FILE.bak"
-        fi
+    # 已打 patch 则跳过
+    local v; v=$(which_version)
+    if [ "$v" = "patch" ]; then
+        warn "当前已打 patch, 跳过 (如需重打请先 ./patch.sh revert)"
+        return 0
     fi
 
-    # 2. 替换 vllm triton_w4a16.py
-    cp "$PATCH" "$VLLM_FILE"
-    info "已替换 vllm triton_w4a16.py -> aiter patch 版"
+    # 1. 在 dist-packages 目录下打 patch (3 段: vllm triton_w4a16 + aiter kernel + configs)
+    #    configs 段是新增文件, 用本模型的 config; 先把本模型 config 段从 patch 里分离
+    #    gemma4-aiter.patch 的 3/3 段已含 gemma4 的 10 个 config, 直接打即可
+    info "打 patch: $PATCH_FILE"
+    (cd "$DIST_DIR" && patch -p0 --no-backup-if-mismatch < "$PATCH_FILE") 2>&1 | sed 's/^/  /'
+    info "patch 已应用 (triton_w4a16 + aiter kernel + configs)"
 
-    # 3. 覆盖 pip aiter 的 kernel (改成 triton 3.5 兼容版; 原版 @triton.utils.jit 会报错)
-    if [ ! -f "$AITER_KERNEL_DST.bak" ]; then
-        cp "$AITER_KERNEL_DST" "$AITER_KERNEL_DST.bak"
-        info "已备份 aiter 原始 kernel -> $AITER_KERNEL_DST.bak"
+    # 2. 若模型不是 gemma4, 覆盖 config 为该模型的 (patch 里固化的是 gemma4 config)
+    if [ "$MODEL" != "gemma4" ] && [ -d "$CONFIG_DIR" ]; then
+        mkdir -p "$AITER_CFG_DIR"
+        cp "$CONFIG_DIR"/*.json "$AITER_CFG_DIR/" 2>/dev/null || true
+        info "已覆盖为 $MODEL 的 config ($(ls "$CONFIG_DIR"/*.json 2>/dev/null | wc -l) 个)"
     fi
-    cp "$AITER_KERNEL" "$AITER_KERNEL_DST"
-    info "已覆盖 aiter kernel -> $AITER_KERNEL_DST"
 
-    # 4. 放置该模型的调优 config
-    mkdir -p "$AITER_CFG_DIR"
-    cp "$CONFIG_DIR"/*.json "$AITER_CFG_DIR/" 2>/dev/null || true
-    info "已放置 $MODEL 的 aiter config ($(ls "$CONFIG_DIR"/*.json 2>/dev/null | wc -l) 个) -> $AITER_CFG_DIR"
-
-    # 5. 清缓存
+    # 3. 清缓存
     clear_compile_cache
 
-    # 6. 提示
+    # 4. 提示
     echo
     info "==== 安装完成 (模型: $MODEL) ===="
     echo
@@ -134,37 +126,29 @@ do_install() {
 
 # ---------- revert ----------
 do_revert() {
-    info "==== 回退到 vllm 原始 triton_w4a16.py ===="
+    info "==== 回退 (patch -R) ===="
 
-    # 恢复 vllm triton_w4a16.py
-    restored=0
-    if [ -f "$VLLM_FILE.bak" ] && ! diff -q "$VLLM_FILE.bak" "$PATCH" >/dev/null 2>&1; then
-        cp "$VLLM_FILE.bak" "$VLLM_FILE"
-        info "已从 .bak 恢复原始 triton_w4a16.py"
-        restored=1
+    local v; v=$(which_version)
+    if [ "$v" = "original" ]; then
+        warn "当前未打 patch, 无需回退"
+        return 0
     fi
-    if [ "$restored" -eq 0 ] && [ -f "$ORIG" ]; then
-        cp "$ORIG" "$VLLM_FILE"
-        info "已用 repo 的 triton_w4a16.py 恢复原始版"
-        restored=1
-    fi
-    if [ "$restored" -eq 0 ]; then
-        err "找不到原始版文件, 无法回退"
-        exit 1
+    if [ "$v" = "missing" ]; then
+        err "vllm 文件不存在: $VLLM_FILE"; exit 1
     fi
 
-    # 恢复 aiter 原始 kernel (可选; 不恢复也不影响 baseline, 因为 baseline 不走 aiter)
-    if [ -f "$AITER_KERNEL_DST.bak" ]; then
-        cp "$AITER_KERNEL_DST.bak" "$AITER_KERNEL_DST"
-        info "已恢复 aiter 原始 kernel"
-    fi
+    # 在 dist-packages 目录下反向打 patch (恢复原始文件 + 删除新增的 configs)
+    info "反向打 patch: $PATCH_FILE"
+    (cd "$DIST_DIR" && patch -p0 -R --no-backup-if-mismatch < "$PATCH_FILE") 2>&1 | sed 's/^/  /'
+    info "已回退到 vllm 原始状态"
 
     clear_compile_cache
 
     echo
     info "==== 回退完成 ===="
     echo
-    echo "已恢复 vllm 原始 triton_w4a16.py, 直接启动 vllm 即走 baseline。"
+    echo "已恢复 vllm 原始 triton_w4a16.py + aiter 原始 kernel, 删除新增 configs。"
+    echo "直接启动 vllm 即走 baseline。"
 }
 
 # ---------- status ----------
@@ -172,30 +156,25 @@ do_status() {
     echo "==== 当前状态 ===="
     local v; v=$(which_version)
     case "$v" in
-        patch)    info "vllm triton_w4a16.py : ${GREEN}aiter patch 版${NC}" ;;
+        patch)    info "vllm triton_w4a16.py : ${GREEN}aiter patch 已打${NC}" ;;
         original) warn "vllm triton_w4a16.py : 原始版 (未打 patch)" ;;
         missing)  err  "vllm triton_w4a16.py : 不存在 ($VLLM_FILE)" ;;
-        *)        warn "vllm triton_w4a16.py : 未知版本 (既非原始也非 patch, 可能被手动改过)" ;;
     esac
 
-    if [ -f "$VLLM_FILE.bak" ]; then
-        info "原始备份存在 : $VLLM_FILE.bak"
-    else
-        warn "原始备份不存在 (.bak)"
-    fi
-
-    # aiter kernel 是否已覆盖 (patch 版)
-    if [ -f "$AITER_KERNEL_DST" ] && diff -q "$AITER_KERNEL_DST" "$AITER_KERNEL" >/dev/null 2>&1; then
-        info "aiter kernel  : 已覆盖为 patch 版 ($AITER_KERNEL_DST)"
-    elif [ -f "$AITER_KERNEL_DST" ]; then
-        warn "aiter kernel  : 仍是原版 (未覆盖)"
+    # aiter kernel 是否已改 (patch 版: @triton.jit 而非 @triton.utils.jit)
+    if [ -f "$AITER_KERNEL_DST" ]; then
+        if grep -q "@triton.utils.jit" "$AITER_KERNEL_DST" 2>/dev/null; then
+            warn "aiter kernel  : 仍是原版 (未打 patch)"
+        else
+            info "aiter kernel  : 已改为 triton3.5 兼容版"
+        fi
     else
         warn "aiter kernel  : aiter 包未安装 ($AITER_PKG_DIR)"
     fi
 
     # config 计数
-    local cfg_n
     if [ -d "$CONFIG_DIR" ]; then
+        local cfg_n
         cfg_n=$(ls "$AITER_CFG_DIR/" 2>/dev/null | grep -Ff <(ls "$CONFIG_DIR") | wc -l)
         if [ "$cfg_n" -gt 0 ]; then
             info "$MODEL config   : $cfg_n / $(ls "$CONFIG_DIR"/*.json 2>/dev/null | wc -l) 个已放置"
@@ -232,7 +211,7 @@ case "$ACTION" in
         echo "用法: $0 {install|revert|status|models} [model]"
         echo
         echo "  install [model]  安装 aiter patch (默认 model=$DEFAULT_MODEL)"
-        echo "  revert           回退到 vllm 原始 triton_w4a16.py"
+        echo "  revert           回退 (patch -R)"
         echo "  status [model]   查看当前安装状态 (默认 model=$DEFAULT_MODEL)"
         echo "  models           列出可选的模型"
         exit 1

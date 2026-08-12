@@ -29,13 +29,7 @@ Hygon DCU BW10 (gfx936) 上,用 **aiter triton w4a16 kernel** 替换 vllm 自带
 gemm/w4a16/
 ├── README.md                         # 本文件 (通用说明)
 ├── patch.sh                          # 一键 install / revert / status / models
-├── triton_w4a16.py                   # vllm 原始 triton_w4a16.py (回退用)
-├── triton_w4a16.py.patch             # 打了 aiter patch 的 triton_w4a16.py (兼容对称/非对称)
-├── aiter_gemm_a16w4.py               # aiter triton w4a16 kernel (原始 fp16 输出, 已修 triton3.5 兼容)
-├── aiter_gemm_a16w4_bf16.py          # [备份] bf16 输出改造 kernel (路B, 性能慢30% 已验证, 未启用)
-├── backup_path3/                     # [备份] 方案③: input bf16→fp16 桥接 + 保 bf16 权重
-│   ├── triton_w4a16.py.path3.patch   #   apply_weights 加 input 桥接的 patch
-│   └── aiter_gemm_a16w4_bf16.py      #   配套的 bf16 输出 kernel
+├── gemma4-aiter.patch                # 源码 patch (3 段合一: vllm triton_w4a16 + aiter kernel + configs)
 ├── tests/                            # 验证 / 性能 / 调优脚本 (通用)
 │   ├── verify_aiter_v2.py            # 精度验证 (aiter vs vllm, cos_sim)
 │   ├── verify_aiter_self.py          # aiter 自洽性验证
@@ -44,7 +38,6 @@ gemm/w4a16/
 │   ├── bench_bf16_kernel.py          # bf16 vs fp16 kernel 精度+性能对比
 │   ├── isolate_bf16_slow.py          # 定位 bf16 慢的根因 (隔离实验)
 │   ├── isolate_scales_dtype.py       # scales dtype 对性能影响
-│   ├── verify_path3_precision.py     # 方案③精度验证
 │   ├── tune_aiter_config.py          # config 参数扫描
 │   ├── gen_aiter_configs.py          # 生成 config json
 │   └── test_custom_op.py             # custom_op + torch.compile 兼容性测试
@@ -55,8 +48,8 @@ gemm/w4a16/
 ```
 
 **通用 vs 模型专属**:
-- 通用(本目录根):`aiter_gemm_a16w4.py`(kernel)、`triton_w4a16.py.patch`(vllm 接入)、`patch.sh`、`tests/`
-  —— 换模型不用动
+- 通用(本目录根):`gemma4-aiter.patch`(3 段合一 patch)、`patch.sh`、`tests/`
+  —— 换模型不用动 (config 段用 gemma4 的, 非 gemma4 模型 install 时覆盖 config)
 - 模型专属(`models/<model>/`):`configs/`(按模型权重 shape 调优的 json)—— 换模型要重新调优
 
 ---
@@ -72,14 +65,16 @@ cd gemm/w4a16
 ./patch.sh models            # 列出可选的模型
 ```
 
-`install` 会:
-1. 备份当前 vllm `triton_w4a16.py` → `triton_w4a16.py.bak`(只备份一次,且不把 patch 版当原始版备份)
-2. 把 `triton_w4a16.py.patch` 拷到 vllm 安装目录
-3. 把 `aiter_gemm_a16w4.py` 放到 `$AITER_ROOT/aiter/ops/triton/`
-4. 把 `models/<model>/configs/awq_w4a16/*.json` 放到 `$AITER_ROOT/aiter/ops/triton/configs/gemm/awq_w4a16/`
-5. 清空 torch.compile 缓存(切换后必做)
+`install` 会(用 `patch -p0` 打 `gemma4-aiter.patch` 到 dist-packages):
+1. 1/3 段: patch vllm `triton_w4a16.py`(GPTQ→AWQ 重排 / 对称 zp 兼容 / 原始 qweight 释放 / custom_op 接入)
+2. 2/3 段: patch aiter `gemm_a16w4.py`(`@triton.utils.jit` → `@triton.jit`,triton3.5 兼容)
+3. 3/3 段: 新增 10 个 config json 到 `aiter/ops/triton/configs/gemm/awq_w4a16/`(gemma4 调优配置)
+4. 清空 torch.compile 缓存(切换后必做)
 
-> 脚本顶部的 `VLLM_DIR` 和 `AITER_ROOT` 可按环境修改。
+`revert` 用 `patch -p0 -R` 原样回退,恢复 vllm/aiter 原始文件并删除新增的 config。
+
+> patch 基于 dist-packages 里 vllm+aiter 的**当前状态**打。若你之前手动改过这些文件,先 `revert` 回干净态再 `install`。
+> 脚本顶部的 `DIST_DIR` 可按环境修改(默认 `/usr/local/lib/python3.10/dist-packages`)。
 
 ### 启动 vllm
 
@@ -290,11 +285,11 @@ SPLITK 离线调优对 kernel 级提速 ~1.5x(大形状),但 decode 端到端 GE
 - **group_size=32**: aiter asm 路径(awq_gemm_asm)硬编码 gs=64,改 gs=32 需重写汇编,
   且 gs=32→64 合并精度损失大(cos_sim 0.7-0.84),故走 triton 路径。
 - **aiter 依赖**: 用环境里 `pip install aiter` 装的预编译版(DCU 定制版 `0.1.3+das.dtk2604`)即可,
-  **不需要 aiter 源码仓库**。`patch.sh install` 会覆盖 pip aiter 的 `gemm_a16w4.py`(改成 triton3.5 兼容版,
-  原版 `@triton.utils.jit` 在 triton 3.5 下会报错),并放置调优 config。
+  **不需要 aiter 源码仓库**。`gemma4-aiter.patch` 的 2/3 段会改 pip aiter 的 `gemm_a16w4.py`(改成
+  triton3.5 兼容版,原版 `@triton.utils.jit` 在 triton 3.5 下会报错),3/3 段放置调优 config。
   patch 代码用 importlib 只加载 `aiter.ops.triton` 子模块,不触发 aiter `__init__.py` 的其他依赖。
-- **AITER_ROOT**: 默认 `/usr/local/lib/python3.10/dist-packages`(pip aiter 位置)。
-  如 aiter 装在别处,设 `AITER_ROOT` 指向其父目录(使得 `$AITER_ROOT/aiter/ops/triton/...` 可达)。
+- **DIST_DIR**: patch 打到 `DIST_DIR=/usr/local/lib/python3.10/dist-packages`(vllm + aiter pip 安装位置)。
+  如装在别处(conda/venv),改 `patch.sh` 顶部的 `DIST_DIR` 指向实际的 site-packages 目录。
 - **torch compile 缓存**: 切换 patch 开关或换文件后,若遇 `'_OpNamespace' 'aiter' object has no attribute ...`
   报错,是旧的编译缓存被复用了。`patch.sh install/revert` 已自动清缓存;手动切换环境变量时需自己清:
   ```bash
