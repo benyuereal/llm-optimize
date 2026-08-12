@@ -29,7 +29,7 @@ Hygon DCU BW10 (gfx936) 上,用 **aiter triton w4a16 kernel** 替换 vllm 自带
 gemm/w4a16/
 ├── README.md                         # 本文件 (通用说明)
 ├── patch.sh                          # 一键 install / revert / status / models
-├── gemma4-aiter.patch                # 源码 patch (3 段合一: vllm triton_w4a16 + aiter kernel + configs)
+├── aiter.patch                       # 源码 patch (3 段合一: vllm triton_w4a16 + aiter kernel + configs)
 ├── tests/                            # 验证 / 性能 / 调优脚本 (通用)
 │   ├── verify_aiter_v2.py            # 精度验证 (aiter vs vllm, cos_sim)
 │   ├── verify_aiter_self.py          # aiter 自洽性验证
@@ -48,7 +48,7 @@ gemm/w4a16/
 ```
 
 **通用 vs 模型专属**:
-- 通用(本目录根):`gemma4-aiter.patch`(3 段合一 patch)、`patch.sh`、`tests/`
+- 通用(本目录根):`aiter.patch`(3 段合一 patch)、`patch.sh`、`tests/`
   —— 换模型不用动 (config 段用 gemma4 的, 非 gemma4 模型 install 时覆盖 config)
 - 模型专属(`models/<model>/`):`configs/`(按模型权重 shape 调优的 json)—— 换模型要重新调优
 
@@ -65,7 +65,7 @@ cd gemm/w4a16
 ./patch.sh models            # 列出可选的模型
 ```
 
-`install` 会(用 `patch -p0` 打 `gemma4-aiter.patch` 到 dist-packages):
+`install` 会(用 `patch -p0` 打 `aiter.patch` 到 dist-packages):
 1. 1/3 段: patch vllm `triton_w4a16.py`(GPTQ→AWQ 重排 / 对称 zp 兼容 / 原始 qweight 释放 / custom_op 接入)
 2. 2/3 段: patch aiter `gemm_a16w4.py`(`@triton.utils.jit` → `@triton.jit`,triton3.5 兼容)
 3. 3/3 段: 新增 10 个 config json 到 `aiter/ops/triton/configs/gemm/awq_w4a16/`(gemma4 调优配置)
@@ -285,7 +285,7 @@ SPLITK 离线调优对 kernel 级提速 ~1.5x(大形状),但 decode 端到端 GE
 - **group_size=32**: aiter asm 路径(awq_gemm_asm)硬编码 gs=64,改 gs=32 需重写汇编,
   且 gs=32→64 合并精度损失大(cos_sim 0.7-0.84),故走 triton 路径。
 - **aiter 依赖**: 用环境里 `pip install aiter` 装的预编译版(DCU 定制版 `0.1.3+das.dtk2604`)即可,
-  **不需要 aiter 源码仓库**。`gemma4-aiter.patch` 的 2/3 段会改 pip aiter 的 `gemm_a16w4.py`(改成
+  **不需要 aiter 源码仓库**。`aiter.patch` 的 2/3 段会改 pip aiter 的 `gemm_a16w4.py`(改成
   triton3.5 兼容版,原版 `@triton.utils.jit` 在 triton 3.5 下会报错),3/3 段放置调优 config。
   patch 代码用 importlib 只加载 `aiter.ops.triton` 子模块,不触发 aiter `__init__.py` 的其他依赖。
 - **DIST_DIR**: patch 打到 `DIST_DIR=/usr/local/lib/python3.10/dist-packages`(vllm + aiter pip 安装位置)。

@@ -16,9 +16,9 @@
 #   ./patch.sh install gemma4    # 同上 (显式指定)
 #   ./patch.sh status gemma4
 #
-# 原理: 用 patch 命令把 gemma4-aiter.patch 打到 vllm + aiter 安装目录。
-#   install = patch -p0 < gemma4-aiter.patch
-#   revert  = patch -p0 -R < gemma4-aiter.patch
+# 原理: 用 patch 命令把 aiter.patch 打到 vllm + aiter 安装目录。
+#   install = patch -p0 < aiter.patch
+#   revert  = patch -p0 -R < aiter.patch
 # ============================================================
 set -e
 
@@ -32,7 +32,7 @@ VLLM_DIR=$DIST_DIR/vllm/model_executor/kernels/linear/mixed_precision
 # aiter 包安装路径 (pip install aiter 装的位置)
 AITER_PKG_DIR=$DIST_DIR/aiter
 
-# 本脚本所在目录 (gemma4-aiter.patch + models/ 就在这里)
+# 本脚本所在目录 (aiter.patch + models/ 就在这里)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ----------------------------------------
 
@@ -44,7 +44,7 @@ AITER_KERNEL_DST="$AITER_PKG_DIR/ops/triton/gemm_a16w4.py"
 AITER_CFG_DIR="$AITER_PKG_DIR/ops/triton/configs/gemm/awq_w4a16"
 
 # patch 文件 (3 段合一: vllm triton_w4a16 + aiter kernel + configs)
-PATCH_FILE="$SCRIPT_DIR/gemma4-aiter.patch"
+PATCH_FILE="$SCRIPT_DIR/aiter.patch"
 
 # 颜色
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
@@ -96,7 +96,7 @@ do_install() {
 
     # 1. 在 dist-packages 目录下打 patch (3 段: vllm triton_w4a16 + aiter kernel + configs)
     #    configs 段是新增文件, 用本模型的 config; 先把本模型 config 段从 patch 里分离
-    #    gemma4-aiter.patch 的 3/3 段已含 gemma4 的 10 个 config, 直接打即可
+    #    aiter.patch 的 3/3 段已含 gemma4 的 10 个 config, 直接打即可
     info "打 patch: $PATCH_FILE"
     (cd "$DIST_DIR" && patch -p0 --no-backup-if-mismatch < "$PATCH_FILE") 2>&1 | sed 's/^/  /'
     info "patch 已应用 (triton_w4a16 + aiter kernel + configs)"

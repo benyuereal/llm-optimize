@@ -3,11 +3,11 @@
 #
 # 用法:
 #   cd /usr/local/lib/python3.10/dist-packages
-#   patch -p0 < gemma4-aiter.patch
+#   patch -p0 < aiter.patch
 #
 # 回退:
 #   cd /usr/local/lib/python3.10/dist-packages
-#   patch -p0 -R < gemma4-aiter.patch
+#   patch -p0 -R < aiter.patch
 #
 # 包含 3 部分 (与 patch.sh install 覆盖范围完全一致):
 #   1. vllm triton_w4a16.py  -> aiter 接入版 (核心: import bypass + gs32 repack + 对称/非对称兼容 + OOM释放)
