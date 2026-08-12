@@ -1,0 +1,1243 @@
+# flash-attention-cutlass: fp8 KV (e5m2+e4m3) + head_dim=512 支持 (gfx936)
+# 分支: path2-e4m3-qfp16
+# 生成: 2026-08-12 12:58:56
+# 包含: 之前session的fp8 e4m3 mixed kernel支持 + 本次fp8 head_dim=512支持
+
+diff --git a/csrc/flash_attn_hipc/flash_api.cpp b/csrc/flash_attn_hipc/flash_api.cpp
+index a137aac..2afde52 100644
+--- a/csrc/flash_attn_hipc/flash_api.cpp
++++ b/csrc/flash_attn_hipc/flash_api.cpp
+@@ -1770,7 +1770,7 @@ std::vector<at::Tensor> hg_prefix_prefill_varlen_fwd(
+   const bool fp8_e5m2_used = q_dtype == at::ScalarType::Float8_e5m2;
+   const bool fp8_used = fp8_e4m3_used || fp8_e5m2_used;
+   const int arch_id = getArch();
+-  const bool use_fp8_bf16_mixed = fp8_e5m2_used && arch_id == 936;
++  const bool use_fp8_bf16_mixed = (fp8_e5m2_used || fp8_e4m3_used) && arch_id == 936;
+   TORCH_CHECK(q_dtype == at::ScalarType::Half || q_dtype == at::ScalarType::BFloat16 ||
+                   q_dtype == at::ScalarType::Char || q_dtype == at::ScalarType::Float8_e4m3fn ||
+                   q_dtype == at::ScalarType::Float8_e5m2,
+@@ -1842,15 +1842,16 @@ std::vector<at::Tensor> hg_prefix_prefill_varlen_fwd(
+                   (head_size_og == 192 and head_size_value == 128) or
+                   (head_size_og == 192 and head_size_value == 192) or
+                   (head_size_og == 256 and head_size_value == 256) or
+-                  (!int8_used && !fp8_used &&
++                  (!int8_used &&
+                    head_size_og == 512 && head_size_value == 512),
+               "Prefix prefill only supports head dimension "
+-              "128+128/192+128/192+192/256+256, plus b16 512+512");
++              "128+128/192+128/192+192/256+256, plus 512+512");
+   if (fp8_used) {
+     TORCH_CHECK((head_size_og == 128 and head_size_value == 128) or
+                     (head_size_og == 192 and head_size_value == 128) or
+-                    (head_size_og == 256 and head_size_value == 256),
+-                "FP8 prefix prefill only supports head dimension 128+128/192+128/256+256");
++                    (head_size_og == 256 and head_size_value == 256) or
++                    (head_size_og == 512 and head_size_value == 512),
++                "FP8 prefix prefill only supports head dimension 128+128/192+128/256+256/512+512");
+     if (use_fp8_bf16_mixed) {
+       TORCH_CHECK(use_bshd_layout, "FP8-input/BF16-compute prefix prefill only supports bshd layout");
+       TORCH_CHECK(scales_q_.has_value() && scales_k_.has_value() && scales_v_.has_value(),
+@@ -3861,7 +3862,9 @@ std::vector<at::Tensor> hg_prefix_decode_varlen_fwd(
+   const bool fp8_e5m2_used = q_dtype == at::ScalarType::Float8_e5m2;
+   const bool fp8_used = fp8_e4m3_used || fp8_e5m2_used;
+   const int arch_id = getArch();
+-  const bool use_fp8_bf16_mixed = fp8_e5m2_used && arch_id == 936;
++  // gfx936 mixed FP8-input/BF16-compute kernel now supports both E5M2 and E4M3 KV storage. E4M3 dequant goes through
++  // the software __e4m32float path, so it is gated by the same arch_id == 936 check.
++  const bool use_fp8_bf16_mixed = (fp8_e5m2_used || fp8_e4m3_used) && arch_id == 936;
+   TORCH_CHECK(q_dtype == at::ScalarType::Half || q_dtype == at::ScalarType::BFloat16 ||
+                   q_dtype == at::ScalarType::Float8_e4m3fn || q_dtype == at::ScalarType::Float8_e5m2,
+               "For prefix decode, only fp16/bf16/fp8_e4m3/fp8_e5m2 input is supported");
+@@ -3912,14 +3915,15 @@ std::vector<at::Tensor> hg_prefix_decode_varlen_fwd(
+               (head_size_og == 192 and head_size_value == 128) or
+               (head_size_og == 192 and head_size_value == 192) or
+               (head_size_og == 256 and head_size_value == 256) or
+-              (!fp8_used && head_size_og == 512 && head_size_value == 512),
++              (head_size_og == 512 && head_size_value == 512),
+               "For prefix decode, only supports head dimension "
+-              "128+128/192+128/192+192/256+256, plus b16 512+512");
++              "128+128/192+128/192+192/256+256/512+512");
+   if (fp8_used) {
+     TORCH_CHECK((head_size_og == 128 and head_size_value == 128) or
+                 (head_size_og == 192 and head_size_value == 128) or
+-                (head_size_og == 256 and head_size_value == 256),
+-                "For fp8 prefix decode, only supports head dimension 128+128/192+128/256+256");
++                (head_size_og == 256 and head_size_value == 256) or
++                (head_size_og == 512 and head_size_value == 512),
++                "For fp8 prefix decode, only supports head dimension 128+128/192+128/256+256/512+512");
+     if (use_fp8_bf16_mixed) {
+       TORCH_CHECK(use_bshd_layout, "FP8-input/BF16-compute prefix decode only supports bshd layout");
+       TORCH_CHECK(scales_q_.has_value() && scales_k_.has_value() && scales_v_.has_value(),
+@@ -4169,7 +4173,7 @@ std::vector<at::Tensor> hg_prefix_decode_varlen_fwd(
+       (arch_id == 930 &&
+        (head_size_value == 128 ||
+         head_size_value == 64)) ||
+-      (arch_id == 936 && (!fp8_used || fp8_e5m2_used) &&
++      (arch_id == 936 && (!fp8_used || fp8_e5m2_used || fp8_e4m3_used) &&
+        (head_size_value == 128 || head_size_value == 512));
+   if (enable_split) {
+     const int decode_blocks = batch_size * params.h;
+diff --git a/csrc/flash_attn_hipc/flash_c_api.h b/csrc/flash_attn_hipc/flash_c_api.h
+index 2edac1f..3d8b004 100644
+--- a/csrc/flash_attn_hipc/flash_c_api.h
++++ b/csrc/flash_attn_hipc/flash_c_api.h
+@@ -29,8 +29,10 @@ void run_mha_fwd(Flash_fwd_params &params, hipStream_t stream, bool force_split_
+                     run_fp8_mha_fwd_prefix_prefill_<elem_type, 192, 128>(params, stream);
+                 } else if (params.d == 256 and params.d_value == 256) {
+                     run_fp8_mha_fwd_prefix_prefill_<elem_type, 256, 256>(params, stream);
++                } else if (params.d == 512 and params.d_value == 512) {
++                    run_fp8_mha_fwd_prefix_prefill_<elem_type, 512, 512>(params, stream);
+                 } else {
+-                    assert(false && "FP8 prefix prefill only supports head_dim=128/128, 192/128, or 256/256");
++                    assert(false && "FP8 prefix prefill only supports head_dim=128/128, 192/128, 256/256, or 512/512");
+                 }
+             });
+         } else if (!params.is_int8){
+diff --git a/csrc/flash_attn_hipc/include/fwd/pv_gemm_prefetch_k.h b/csrc/flash_attn_hipc/include/fwd/pv_gemm_prefetch_k.h
+index 01ef789..edf32ac 100644
+--- a/csrc/flash_attn_hipc/include/fwd/pv_gemm_prefetch_k.h
++++ b/csrc/flash_attn_hipc/include/fwd/pv_gemm_prefetch_k.h
+@@ -151,7 +151,7 @@ __forceinline__ __device__ void  pv_gemm_prefetch_k(
+                 asm volatile("s_setprio 1");
+                 asm volatile("s_waitcnt lgkmcnt(2)");
+                 if constexpr (UseCompactLds) {
+-                    mixed_prefill_raw_v_cast_half<0>(v_reg[stage_id * WARP_N * WARP_K / (32 * 32)]);
++                    mixed_prefill_raw_v_cast_half<0, Element, InputElement>(v_reg[stage_id * WARP_N * WARP_K / (32 * 32)]);
+                 }
+                 __builtin_amdgcn_sched_barrier(0);
+                 #pragma unroll
+@@ -209,7 +209,7 @@ __forceinline__ __device__ void  pv_gemm_prefetch_k(
+                 asm volatile("s_setprio 1");
+                 asm volatile("s_waitcnt lgkmcnt(0)");
+                 if constexpr (UseCompactLds) {
+-                    mixed_prefill_raw_v_cast_half<1>(v_reg[stage_id * WARP_N * WARP_K / (32 * 32)]);
++                    mixed_prefill_raw_v_cast_half<1, Element, InputElement>(v_reg[stage_id * WARP_N * WARP_K / (32 * 32)]);
+                 }
+                 __builtin_amdgcn_sched_barrier(0);
+                 #pragma unroll
+@@ -341,7 +341,7 @@ __forceinline__ __device__ void  pv_gemm_prefetch_k(
+             asm volatile("s_setprio 1");
+             asm volatile("s_waitcnt lgkmcnt(2)");
+             if constexpr (UseCompactLds) {
+-                mixed_prefill_raw_v_cast_half<0>(v_reg[last_stage_id * WARP_N * WARP_K / (32 * 32)]);
++                mixed_prefill_raw_v_cast_half<0, Element, InputElement>(v_reg[last_stage_id * WARP_N * WARP_K / (32 * 32)]);
+             }
+             __builtin_amdgcn_sched_barrier(0);
+             #pragma unroll
+@@ -397,7 +397,7 @@ __forceinline__ __device__ void  pv_gemm_prefetch_k(
+             asm volatile("s_setprio 1");
+             asm volatile("s_waitcnt lgkmcnt(0)");
+             if constexpr (UseCompactLds) {
+-                mixed_prefill_raw_v_cast_half<1>(v_reg[last_stage_id * WARP_N * WARP_K / (32 * 32)]);
++                mixed_prefill_raw_v_cast_half<1, Element, InputElement>(v_reg[last_stage_id * WARP_N * WARP_K / (32 * 32)]);
+             }
+             __builtin_amdgcn_sched_barrier(0);
+             #pragma unroll
+@@ -530,7 +530,7 @@ __forceinline__ __device__ void  pv_gemm_prefetch_k(
+                 asm volatile("s_setprio 1");
+                 asm volatile("s_waitcnt lgkmcnt(2)");
+                 if constexpr (UseCompactLds) {
+-                    mixed_prefill_raw_v_cast_half<0>(v_reg[stage_id * WARP_N * WARP_K / (32 * 32)]);
++                    mixed_prefill_raw_v_cast_half<0, Element, InputElement>(v_reg[stage_id * WARP_N * WARP_K / (32 * 32)]);
+                 }
+                 __builtin_amdgcn_sched_barrier(0);
+                 #pragma unroll
+@@ -587,7 +587,7 @@ __forceinline__ __device__ void  pv_gemm_prefetch_k(
+                 asm volatile("s_setprio 1");
+                 asm volatile("s_waitcnt lgkmcnt(0)");
+                 if constexpr (UseCompactLds) {
+-                    mixed_prefill_raw_v_cast_half<1>(v_reg[stage_id * WARP_N * WARP_K / (32 * 32)]);
++                    mixed_prefill_raw_v_cast_half<1, Element, InputElement>(v_reg[stage_id * WARP_N * WARP_K / (32 * 32)]);
+                 }
+                 __builtin_amdgcn_sched_barrier(0);
+                 #pragma unroll
+@@ -722,7 +722,7 @@ __forceinline__ __device__ void  pv_gemm_prefetch_k(
+                 asm volatile("s_setprio 1");
+                 asm volatile("s_waitcnt lgkmcnt(2)");
+                 if constexpr (UseCompactLds) {
+-                    mixed_prefill_raw_v_cast_half<0>(v_reg[last_stage_id * WARP_N * WARP_K / (32 * 32)]);
++                    mixed_prefill_raw_v_cast_half<0, Element, InputElement>(v_reg[last_stage_id * WARP_N * WARP_K / (32 * 32)]);
+                 }
+                 __builtin_amdgcn_sched_barrier(0);
+                 #pragma unroll
+@@ -779,7 +779,7 @@ __forceinline__ __device__ void  pv_gemm_prefetch_k(
+                 asm volatile("s_setprio 1");
+                 asm volatile("s_waitcnt lgkmcnt(0)");
+                 if constexpr (UseCompactLds) {
+-                    mixed_prefill_raw_v_cast_half<1>(v_reg[last_stage_id * WARP_N * WARP_K / (32 * 32)]);
++                    mixed_prefill_raw_v_cast_half<1, Element, InputElement>(v_reg[last_stage_id * WARP_N * WARP_K / (32 * 32)]);
+                 }
+                 __builtin_amdgcn_sched_barrier(0);
+                 #pragma unroll
+@@ -911,7 +911,7 @@ __forceinline__ __device__ void  pv_gemm_prefetch_k(
+                 asm volatile("s_setprio 1");
+                 asm volatile("s_waitcnt lgkmcnt(2)");
+                 if constexpr (UseCompactLds) {
+-                    mixed_prefill_raw_v_cast_half<0>(v_reg[stage_id * WARP_N * WARP_K / (32 * 32)]);
++                    mixed_prefill_raw_v_cast_half<0, Element, InputElement>(v_reg[stage_id * WARP_N * WARP_K / (32 * 32)]);
+                 }
+                 __builtin_amdgcn_sched_barrier(0);
+                 #pragma unroll
+@@ -968,7 +968,7 @@ __forceinline__ __device__ void  pv_gemm_prefetch_k(
+                 asm volatile("s_setprio 1");
+                 asm volatile("s_waitcnt lgkmcnt(0)");
+                 if constexpr (UseCompactLds) {
+-                    mixed_prefill_raw_v_cast_half<1>(v_reg[stage_id * WARP_N * WARP_K / (32 * 32)]);
++                    mixed_prefill_raw_v_cast_half<1, Element, InputElement>(v_reg[stage_id * WARP_N * WARP_K / (32 * 32)]);
+                 }
+                 __builtin_amdgcn_sched_barrier(0);
+                 #pragma unroll
+@@ -1101,7 +1101,7 @@ __forceinline__ __device__ void  pv_gemm_prefetch_k(
+                 asm volatile("s_setprio 1");
+                 asm volatile("s_waitcnt lgkmcnt(2)");
+                 if constexpr (UseCompactLds) {
+-                    mixed_prefill_raw_v_cast_half<0>(v_reg[last_stage_id * WARP_N * WARP_K / (32 * 32)]);
++                    mixed_prefill_raw_v_cast_half<0, Element, InputElement>(v_reg[last_stage_id * WARP_N * WARP_K / (32 * 32)]);
+                 }
+                 __builtin_amdgcn_sched_barrier(0);
+                 #pragma unroll
+@@ -1158,7 +1158,7 @@ __forceinline__ __device__ void  pv_gemm_prefetch_k(
+                 asm volatile("s_setprio 1");
+                 asm volatile("s_waitcnt lgkmcnt(0)");
+                 if constexpr (UseCompactLds) {
+-                    mixed_prefill_raw_v_cast_half<1>(v_reg[last_stage_id * WARP_N * WARP_K / (32 * 32)]);
++                    mixed_prefill_raw_v_cast_half<1, Element, InputElement>(v_reg[last_stage_id * WARP_N * WARP_K / (32 * 32)]);
+                 }
+                 __builtin_amdgcn_sched_barrier(0);
+                 #pragma unroll
+@@ -1292,7 +1292,7 @@ __forceinline__ __device__ void  pv_gemm_prefetch_k(
+                 asm volatile("s_setprio 1");
+                 asm volatile("s_waitcnt lgkmcnt(2)");
+                 if constexpr (UseCompactLds) {
+-                    mixed_prefill_raw_v_cast_half<0>(v_reg[stage_id * WARP_N * WARP_K / (32 * 32)]);
++                    mixed_prefill_raw_v_cast_half<0, Element, InputElement>(v_reg[stage_id * WARP_N * WARP_K / (32 * 32)]);
+                 }
+                 __builtin_amdgcn_sched_barrier(0);
+                 #pragma unroll
+@@ -1349,7 +1349,7 @@ __forceinline__ __device__ void  pv_gemm_prefetch_k(
+                 asm volatile("s_setprio 1");
+                 asm volatile("s_waitcnt lgkmcnt(0)");
+                 if constexpr (UseCompactLds) {
+-                    mixed_prefill_raw_v_cast_half<1>(v_reg[stage_id * WARP_N * WARP_K / (32 * 32)]);
++                    mixed_prefill_raw_v_cast_half<1, Element, InputElement>(v_reg[stage_id * WARP_N * WARP_K / (32 * 32)]);
+                 }
+                 __builtin_amdgcn_sched_barrier(0);
+                 #pragma unroll
+@@ -1461,7 +1461,7 @@ __forceinline__ __device__ void  pv_gemm_prefetch_k(
+                 asm volatile("s_setprio 1");
+                 asm volatile("s_waitcnt lgkmcnt(2)");
+                 if constexpr (UseCompactLds) {
+-                    mixed_prefill_raw_v_cast_half<0>(v_reg[stage_id * WARP_N * WARP_K / (32 * 32)]);
++                    mixed_prefill_raw_v_cast_half<0, Element, InputElement>(v_reg[stage_id * WARP_N * WARP_K / (32 * 32)]);
+                 }
+                 __builtin_amdgcn_sched_barrier(0);
+                 #pragma unroll
+@@ -1518,7 +1518,7 @@ __forceinline__ __device__ void  pv_gemm_prefetch_k(
+                 asm volatile("s_setprio 1");
+                 asm volatile("s_waitcnt lgkmcnt(0)");
+                 if constexpr (UseCompactLds) {
+-                    mixed_prefill_raw_v_cast_half<1>(v_reg[stage_id * WARP_N * WARP_K / (32 * 32)]);
++                    mixed_prefill_raw_v_cast_half<1, Element, InputElement>(v_reg[stage_id * WARP_N * WARP_K / (32 * 32)]);
+                 }
+                 __builtin_amdgcn_sched_barrier(0);
+                 #pragma unroll
+diff --git a/csrc/flash_attn_hipc/include/fwd/pv_gemm_prefetch_k_headdim128.h b/csrc/flash_attn_hipc/include/fwd/pv_gemm_prefetch_k_headdim128.h
+index 622b09c..a86b8bb 100644
+--- a/csrc/flash_attn_hipc/include/fwd/pv_gemm_prefetch_k_headdim128.h
++++ b/csrc/flash_attn_hipc/include/fwd/pv_gemm_prefetch_k_headdim128.h
+@@ -147,7 +147,7 @@ __forceinline__ __device__ void  pv_gemm_prefetch_k_headdim128(
+             if constexpr (UseCompactLds) {
+                 constexpr int kTileElements = 32 * 32;
+                 const int raw_stage_base = stage_id * STAGES;
+-                mixed_prefill_raw_lds_v_to_bf16_regs<false>(v_lds, raw_stage_base * kTileElements, v_reg[0]);
++                mixed_prefill_raw_lds_v_to_bf16_regs<false, Element, InputElement>(v_lds, raw_stage_base * kTileElements, v_reg[0]);
+             }
+ 
+             if constexpr (!UseCompactLds) {
+@@ -185,7 +185,7 @@ __forceinline__ __device__ void  pv_gemm_prefetch_k_headdim128(
+                 if constexpr (UseCompactLds) {
+                     constexpr int kTileElements = 32 * 32;
+                     const int raw_stage_base = stage_id * STAGES;
+-                    mixed_prefill_raw_lds_v_to_bf16_regs<false>(v_lds, (raw_stage_base + 1) * kTileElements,
++                    mixed_prefill_raw_lds_v_to_bf16_regs<false, Element, InputElement>(v_lds, (raw_stage_base + 1) * kTileElements,
+                                                                v_reg_tmp[0]);
+                 } else {
+                 #pragma unroll
+@@ -505,7 +505,7 @@ __forceinline__ __device__ void  pv_gemm_prefetch_k_headdim128(
+         if constexpr (UseCompactLds) {
+             constexpr int kTileElements = 32 * 32;
+             const int raw_stage_base = last_stage_id * STAGES;
+-            mixed_prefill_raw_lds_v_to_bf16_regs<false>(v_lds, raw_stage_base * kTileElements, v_reg[0]);
++            mixed_prefill_raw_lds_v_to_bf16_regs<false, Element, InputElement>(v_lds, raw_stage_base * kTileElements, v_reg[0]);
+         }
+         if constexpr (!UseCompactLds) {
+         #pragma unroll
+@@ -541,7 +541,7 @@ __forceinline__ __device__ void  pv_gemm_prefetch_k_headdim128(
+             if constexpr (UseCompactLds) {
+                 constexpr int kTileElements = 32 * 32;
+                 const int raw_stage_base = last_stage_id * STAGES;
+-                mixed_prefill_raw_lds_v_to_bf16_regs<false>(v_lds, (raw_stage_base + 1) * kTileElements, v_reg_tmp[0]);
++                mixed_prefill_raw_lds_v_to_bf16_regs<false, Element, InputElement>(v_lds, (raw_stage_base + 1) * kTileElements, v_reg_tmp[0]);
+             } else {
+             #pragma unroll
+             for(int vec_idx = 0; vec_idx < 4; ++vec_idx) {
+@@ -850,7 +850,7 @@ __forceinline__ __device__ void  pv_gemm_prefetch_k_headdim128(
+             if constexpr (UseCompactLds) {
+                 constexpr int kTileElements = 32 * 32;
+                 const int raw_stage_base = stage_id * STAGES;
+-                mixed_prefill_raw_lds_v_to_bf16_regs<false>(v_lds, raw_stage_base * kTileElements, v_reg[0]);
++                mixed_prefill_raw_lds_v_to_bf16_regs<false, Element, InputElement>(v_lds, raw_stage_base * kTileElements, v_reg[0]);
+             }
+ 
+             if constexpr (!UseCompactLds) {
+@@ -885,7 +885,7 @@ __forceinline__ __device__ void  pv_gemm_prefetch_k_headdim128(
+                 if constexpr (UseCompactLds) {
+                     constexpr int kTileElements = 32 * 32;
+                     const int raw_stage_base = stage_id * STAGES;
+-                    mixed_prefill_raw_lds_v_to_bf16_regs<false>(v_lds, (raw_stage_base + 1) * kTileElements,
++                    mixed_prefill_raw_lds_v_to_bf16_regs<false, Element, InputElement>(v_lds, (raw_stage_base + 1) * kTileElements,
+                                                                v_reg_tmp[0]);
+                 } else {
+                 #pragma unroll
+@@ -1200,7 +1200,7 @@ __forceinline__ __device__ void  pv_gemm_prefetch_k_headdim128(
+         if constexpr (UseCompactLds) {
+             constexpr int kTileElements = 32 * 32;
+             const int raw_stage_base = last_stage_id * STAGES;
+-            mixed_prefill_raw_lds_v_to_bf16_regs<false>(v_lds, raw_stage_base * kTileElements, v_reg[0]);
++            mixed_prefill_raw_lds_v_to_bf16_regs<false, Element, InputElement>(v_lds, raw_stage_base * kTileElements, v_reg[0]);
+         }
+ 
+         if constexpr (!UseCompactLds) {
+@@ -1237,7 +1237,7 @@ __forceinline__ __device__ void  pv_gemm_prefetch_k_headdim128(
+             if constexpr (UseCompactLds) {
+                 constexpr int kTileElements = 32 * 32;
+                 const int raw_stage_base = last_stage_id * STAGES;
+-                mixed_prefill_raw_lds_v_to_bf16_regs<false>(v_lds, (raw_stage_base + 1) * kTileElements, v_reg_tmp[0]);
++                mixed_prefill_raw_lds_v_to_bf16_regs<false, Element, InputElement>(v_lds, (raw_stage_base + 1) * kTileElements, v_reg_tmp[0]);
+             } else {
+             #pragma unroll
+             for(int vec_idx = 0; vec_idx < 4; ++vec_idx) {
+diff --git a/csrc/flash_attn_hipc/include/fwd/pv_gemm_utils.h b/csrc/flash_attn_hipc/include/fwd/pv_gemm_utils.h
+index 7032ad1..128b7e4 100644
+--- a/csrc/flash_attn_hipc/include/fwd/pv_gemm_utils.h
++++ b/csrc/flash_attn_hipc/include/fwd/pv_gemm_utils.h
+@@ -12,6 +12,13 @@ struct FwdInputPipeline<fp8_e5m2, BFloat16> {
+     static constexpr bool kUseCompactLds = true;
+ };
+ 
++// E4M3 reuses the same compact-LDS pipeline as E5M2: the raw FP8 bytes are loaded into LDS
++// without expansion and dequantized to BF16 in registers (e4m3x2_to_bf16x2) at read time.
++template <>
++struct FwdInputPipeline<fp8_e4m3, BFloat16> {
++    static constexpr bool kUseCompactLds = true;
++};
++
+ // E5M2 and FP16 share sign/exponent/mantissa positions. Expand two bytes into FP16 words, convert to FP32, and retain
+ // the high BF16 words. Finite E5M2 values are exact in BF16; FP16 NaNs remain BF16 NaNs without payload canonicalizing.
+ __forceinline__ __device__ uint32_t e5m2x2_to_bf16x2(uint16_t input) {
+@@ -26,6 +33,19 @@ __forceinline__ __device__ uint32_t e5m2x2_to_bf16x2(uint16_t input) {
+     return (__builtin_bit_cast(uint32_t, value0) >> 16) | (__builtin_bit_cast(uint32_t, value1) & 0xffff0000u);
+ }
+ 
++// E4M3 has no bit-layout overlap with FP16/BF16, so unlike e5m2x2_to_bf16x2 we must dequant each byte through the
++// software __e4m32float path (intrinsic.h) and then pack two BF16 values. The layout matches e5m2x2_to_bf16x2:
++// low byte -> low BF16, high byte -> high BF16.
++__forceinline__ __device__ uint32_t e4m3x2_to_bf16x2(uint16_t input) {
++    const uint8_t byte0 = static_cast<uint8_t>(input & 0x00ffu);
++    const uint8_t byte1 = static_cast<uint8_t>((input >> 8) & 0x00ffu);
++    const float f0 = __e4m32float(byte0);
++    const float f1 = __e4m32float(byte1);
++    const unsigned short b0 = inlineasm_float2bfloat16_ushort_nonan(f0);
++    const unsigned short b1 = inlineasm_float2bfloat16_ushort_nonan(f1);
++    return (static_cast<uint32_t>(b0)) | (static_cast<uint32_t>(b1) << 16);
++}
++
+ template <typename ComputeElement>
+ __forceinline__ __device__ void fp8_buffer_load_16_raw_lds(ComputeElement *const shared_addr,
+                                                            const vec4_uint global_addr, const int lds_tile_offset,
+@@ -59,11 +79,12 @@ mixed_prefill_buffer_load_32x32_raw_lds(ComputeElement *const shared_addr, const
+     }
+ }
+ 
+-template <bool CrossWave, typename ComputeElement>
++template <bool CrossWave, typename ComputeElement, typename InputElement = fp8_e5m2>
+ __forceinline__ __device__ void mixed_prefill_raw_lds_v_to_bf16_regs(ComputeElement *const shared_addr,
+                                                                      const int lds_tile_offset,
+                                                                      union_vec2_f16x2<ComputeElement> output[4]) {
+     static_assert(std::is_same_v<ComputeElement, BFloat16>);
++    static_assert(std::is_same_v<InputElement, fp8_e5m2> || std::is_same_v<InputElement, fp8_e4m3>);
+     if constexpr (CrossWave) {
+         __syncthreads();
+     }
+@@ -87,8 +108,13 @@ __forceinline__ __device__ void mixed_prefill_raw_lds_v_to_bf16_regs(ComputeElem
+ 
+ #pragma unroll
+     for (int vec_idx = 0; vec_idx < 4; ++vec_idx) {
+-        output[vec_idx].i32[0] = e5m2x2_to_bf16x2(static_cast<uint16_t>(raw[vec_idx][0]));
+-        output[vec_idx].i32[1] = e5m2x2_to_bf16x2(static_cast<uint16_t>(raw[vec_idx][1]));
++        if constexpr (std::is_same_v<InputElement, fp8_e5m2>) {
++            output[vec_idx].i32[0] = e5m2x2_to_bf16x2(static_cast<uint16_t>(raw[vec_idx][0]));
++            output[vec_idx].i32[1] = e5m2x2_to_bf16x2(static_cast<uint16_t>(raw[vec_idx][1]));
++        } else {
++            output[vec_idx].i32[0] = e4m3x2_to_bf16x2(static_cast<uint16_t>(raw[vec_idx][0]));
++            output[vec_idx].i32[1] = e4m3x2_to_bf16x2(static_cast<uint16_t>(raw[vec_idx][1]));
++        }
+     }
+ }
+ 
+@@ -115,16 +141,22 @@ __forceinline__ __device__ void mixed_prefill_raw_lds_v_issue(ComputeElement *co
+     }
+ }
+ 
+-template <int Half, typename ComputeElement>
++template <int Half, typename ComputeElement, typename InputElement = fp8_e5m2>
+ __forceinline__ __device__ void mixed_prefill_raw_v_cast_half(union_vec2_f16x2<ComputeElement> output[4]) {
+     static_assert(std::is_same_v<ComputeElement, BFloat16>);
++    static_assert(std::is_same_v<InputElement, fp8_e5m2> || std::is_same_v<InputElement, fp8_e4m3>);
+     static_assert(Half == 0 || Half == 1);
+     constexpr int kVecBegin = Half * 2;
+     __builtin_amdgcn_sched_barrier(0);
+ #pragma unroll
+     for (int vec_idx = kVecBegin; vec_idx < kVecBegin + 2; ++vec_idx) {
+-        output[vec_idx].i32[0] = e5m2x2_to_bf16x2(static_cast<uint16_t>(output[vec_idx].i32[0]));
+-        output[vec_idx].i32[1] = e5m2x2_to_bf16x2(static_cast<uint16_t>(output[vec_idx].i32[1]));
++        if constexpr (std::is_same_v<InputElement, fp8_e5m2>) {
++            output[vec_idx].i32[0] = e5m2x2_to_bf16x2(static_cast<uint16_t>(output[vec_idx].i32[0]));
++            output[vec_idx].i32[1] = e5m2x2_to_bf16x2(static_cast<uint16_t>(output[vec_idx].i32[1]));
++        } else {
++            output[vec_idx].i32[0] = e4m3x2_to_bf16x2(static_cast<uint16_t>(output[vec_idx].i32[0]));
++            output[vec_idx].i32[1] = e4m3x2_to_bf16x2(static_cast<uint16_t>(output[vec_idx].i32[1]));
++        }
+     }
+     __builtin_amdgcn_sched_barrier(0);
+ }
+diff --git a/csrc/flash_attn_hipc/include/fwd/qk_gemm_prefetch_v.h b/csrc/flash_attn_hipc/include/fwd/qk_gemm_prefetch_v.h
+index 8c5030f..2aa9cc9 100644
+--- a/csrc/flash_attn_hipc/include/fwd/qk_gemm_prefetch_v.h
++++ b/csrc/flash_attn_hipc/include/fwd/qk_gemm_prefetch_v.h
+@@ -138,7 +138,7 @@ __forceinline__ __device__ void  qk_gemm_prefetch_v(
+             asm volatile("s_waitcnt lgkmcnt(0)");
+         #endif
+         if constexpr (UseCompactLds) {
+-                mixed_prefill_raw_qk_cast_half<0>(&k_reg[stage_id * (WARP_N * kBlockK) / (32 * 32) * 2]);
++                mixed_prefill_raw_qk_cast_half<0, Element, InputElement>(&k_reg[stage_id * (WARP_N * kBlockK) / (32 * 32) * 2]);
+             }
+         __builtin_amdgcn_sched_barrier(0);
+         asm volatile("s_setprio 1");
+@@ -178,7 +178,7 @@ __forceinline__ __device__ void  qk_gemm_prefetch_v(
+             asm volatile("s_waitcnt lgkmcnt(0)");
+         #endif
+         if constexpr (UseCompactLds) {
+-            mixed_prefill_raw_qk_cast_half<1>(&k_reg[stage_id * (WARP_N * kBlockK) / (32 * 32) * 2]);
++            mixed_prefill_raw_qk_cast_half<1, Element, InputElement>(&k_reg[stage_id * (WARP_N * kBlockK) / (32 * 32) * 2]);
+         }
+         __builtin_amdgcn_sched_barrier(0);
+         {
+@@ -305,7 +305,7 @@ __forceinline__ __device__ void  qk_gemm_prefetch_v(
+             asm volatile("s_waitcnt lgkmcnt(0)");
+         #endif
+         if constexpr (UseCompactLds) {
+-            mixed_prefill_raw_qk_cast_half<0>(
++            mixed_prefill_raw_qk_cast_half<0, Element, InputElement>(
+                 &k_reg[last_stage_id * (WARP_N * kBlockK) / (32 * 32) * 2]);
+         }
+         __builtin_amdgcn_sched_barrier(0);
+@@ -345,7 +345,7 @@ __forceinline__ __device__ void  qk_gemm_prefetch_v(
+             asm volatile("s_waitcnt lgkmcnt(0)");
+         #endif
+         if constexpr (UseCompactLds) {
+-            mixed_prefill_raw_qk_cast_half<1>(
++            mixed_prefill_raw_qk_cast_half<1, Element, InputElement>(
+                 &k_reg[last_stage_id * (WARP_N * kBlockK) / (32 * 32) * 2]);
+         }
+         __builtin_amdgcn_sched_barrier(0);
+@@ -469,7 +469,7 @@ __forceinline__ __device__ void  qk_gemm_prefetch_v(
+                 asm volatile("s_waitcnt lgkmcnt(0)");
+             #endif
+             if constexpr (UseCompactLds) {
+-                mixed_prefill_raw_qk_cast_half<0>(
++                mixed_prefill_raw_qk_cast_half<0, Element, InputElement>(
+                     &k_reg[stage_id * (WARP_N * kBlockK) / (32 * 32) * 2]);
+             }
+             __builtin_amdgcn_sched_barrier(0);
+@@ -510,7 +510,7 @@ __forceinline__ __device__ void  qk_gemm_prefetch_v(
+                 asm volatile("s_waitcnt lgkmcnt(0)");
+             #endif
+             if constexpr (UseCompactLds) {
+-                mixed_prefill_raw_qk_cast_half<1>(
++                mixed_prefill_raw_qk_cast_half<1, Element, InputElement>(
+                     &k_reg[stage_id * (WARP_N * kBlockK) / (32 * 32) * 2]);
+             }
+             __builtin_amdgcn_sched_barrier(0);
+@@ -641,7 +641,7 @@ __forceinline__ __device__ void  qk_gemm_prefetch_v(
+                 asm volatile("s_waitcnt lgkmcnt(0)");
+             #endif
+             if constexpr (UseCompactLds) {
+-                mixed_prefill_raw_qk_cast_half<0>(
++                mixed_prefill_raw_qk_cast_half<0, Element, InputElement>(
+                     &k_reg[last_stage_id * (WARP_N * kBlockK) / (32 * 32) * 2]);
+             }
+             __builtin_amdgcn_sched_barrier(0);
+@@ -681,7 +681,7 @@ __forceinline__ __device__ void  qk_gemm_prefetch_v(
+                 asm volatile("s_waitcnt lgkmcnt(0)");
+             #endif
+             if constexpr (UseCompactLds) {
+-                mixed_prefill_raw_qk_cast_half<1>(
++                mixed_prefill_raw_qk_cast_half<1, Element, InputElement>(
+                     &k_reg[last_stage_id * (WARP_N * kBlockK) / (32 * 32) * 2]);
+             }
+             __builtin_amdgcn_sched_barrier(0);
+@@ -807,7 +807,7 @@ __forceinline__ __device__ void  qk_gemm_prefetch_v(
+                 asm volatile("s_waitcnt lgkmcnt(0)");
+             #endif
+             if constexpr (UseCompactLds) {
+-                    mixed_prefill_raw_qk_cast_half<0>(&k_reg[stage_id * (WARP_N * kBlockK) / (32 * 32) * 2]);
++                    mixed_prefill_raw_qk_cast_half<0, Element, InputElement>(&k_reg[stage_id * (WARP_N * kBlockK) / (32 * 32) * 2]);
+                 }
+             __builtin_amdgcn_sched_barrier(0);
+             asm volatile("s_setprio 1");
+@@ -847,7 +847,7 @@ __forceinline__ __device__ void  qk_gemm_prefetch_v(
+                 asm volatile("s_waitcnt lgkmcnt(0)");
+             #endif
+             if constexpr (UseCompactLds) {
+-                mixed_prefill_raw_qk_cast_half<1>(
++                mixed_prefill_raw_qk_cast_half<1, Element, InputElement>(
+                     &k_reg[stage_id * (WARP_N * kBlockK) / (32 * 32) * 2]);
+             }
+             __builtin_amdgcn_sched_barrier(0);
+@@ -980,7 +980,7 @@ __forceinline__ __device__ void  qk_gemm_prefetch_v(
+                 asm volatile("s_waitcnt lgkmcnt(0)");
+             #endif
+             if constexpr (UseCompactLds) {
+-                mixed_prefill_raw_qk_cast_half<0>(
++                mixed_prefill_raw_qk_cast_half<0, Element, InputElement>(
+                     &k_reg[last_stage_id * (WARP_N * kBlockK) / (32 * 32) * 2]);
+             }
+             __builtin_amdgcn_sched_barrier(0);
+@@ -1020,7 +1020,7 @@ __forceinline__ __device__ void  qk_gemm_prefetch_v(
+                 asm volatile("s_waitcnt lgkmcnt(0)");
+             #endif
+             if constexpr (UseCompactLds) {
+-                mixed_prefill_raw_qk_cast_half<1>(
++                mixed_prefill_raw_qk_cast_half<1, Element, InputElement>(
+                     &k_reg[last_stage_id * (WARP_N * kBlockK) / (32 * 32) * 2]);
+             }
+             __builtin_amdgcn_sched_barrier(0);
+@@ -1147,7 +1147,7 @@ __forceinline__ __device__ void  qk_gemm_prefetch_v(
+                 asm volatile("s_waitcnt lgkmcnt(0)");
+             #endif
+             if constexpr (UseCompactLds) {
+-                    mixed_prefill_raw_qk_cast_half<0>(&k_reg[stage_id * (WARP_N * kBlockK) / (32 * 32) * 2]);
++                    mixed_prefill_raw_qk_cast_half<0, Element, InputElement>(&k_reg[stage_id * (WARP_N * kBlockK) / (32 * 32) * 2]);
+                 }
+             __builtin_amdgcn_sched_barrier(0);
+             asm volatile("s_setprio 1");
+@@ -1187,7 +1187,7 @@ __forceinline__ __device__ void  qk_gemm_prefetch_v(
+                 asm volatile("s_waitcnt lgkmcnt(0)");
+             #endif
+             if constexpr (UseCompactLds) {
+-                mixed_prefill_raw_qk_cast_half<1>(
++                mixed_prefill_raw_qk_cast_half<1, Element, InputElement>(
+                     &k_reg[stage_id * (WARP_N * kBlockK) / (32 * 32) * 2]);
+             }
+             __builtin_amdgcn_sched_barrier(0);
+@@ -1280,7 +1280,7 @@ __forceinline__ __device__ void  qk_gemm_prefetch_v(
+                 asm volatile("s_waitcnt lgkmcnt(0)");
+             #endif
+             if constexpr (UseCompactLds) {
+-                mixed_prefill_raw_qk_cast_half<0>(
++                mixed_prefill_raw_qk_cast_half<0, Element, InputElement>(
+                     &k_reg[stage_id * (WARP_N * kBlockK) / (32 * 32) * 2]);
+             }
+             __builtin_amdgcn_sched_barrier(0);
+@@ -1320,7 +1320,7 @@ __forceinline__ __device__ void  qk_gemm_prefetch_v(
+                 asm volatile("s_waitcnt lgkmcnt(0)");
+             #endif
+             if constexpr (UseCompactLds) {
+-                mixed_prefill_raw_qk_cast_half<1>(
++                mixed_prefill_raw_qk_cast_half<1, Element, InputElement>(
+                     &k_reg[stage_id * (WARP_N * kBlockK) / (32 * 32) * 2]);
+             }
+             __builtin_amdgcn_sched_barrier(0);
+diff --git a/csrc/flash_attn_hipc/include/fwd/qk_gemm_prefetch_v_headdim128.h b/csrc/flash_attn_hipc/include/fwd/qk_gemm_prefetch_v_headdim128.h
+index 972c308..6e8e008 100644
+--- a/csrc/flash_attn_hipc/include/fwd/qk_gemm_prefetch_v_headdim128.h
++++ b/csrc/flash_attn_hipc/include/fwd/qk_gemm_prefetch_v_headdim128.h
+@@ -137,7 +137,7 @@ __forceinline__ __device__ void  qk_gemm_prefetch_v_headdim128(
+         __builtin_amdgcn_sched_barrier(0);
+         if constexpr (UseCompactLds) {
+             const int raw_tile_offset = (stage_id * STAGES) * (WARP_N / 32) * (kBlockK / 32) * (32 * 34);
+-            mixed_prefill_raw_lds_qk_to_bf16_regs<false>(k_lds, raw_tile_offset, k_reg);
++            mixed_prefill_raw_lds_qk_to_bf16_regs<false, Element, InputElement>(k_lds, raw_tile_offset, k_reg);
+         }
+ 
+         // 第一笔的数据 lds -> vgpr
+@@ -176,7 +176,7 @@ __forceinline__ __device__ void  qk_gemm_prefetch_v_headdim128(
+             __builtin_amdgcn_sched_barrier(0);
+             if constexpr (UseCompactLds) {
+                 const int raw_tile_offset = (stage_id * STAGES + 1) * (WARP_N / 32) * (kBlockK / 32) * (32 * 34);
+-                mixed_prefill_raw_lds_qk_to_bf16_regs<false>(k_lds, raw_tile_offset, k_reg_tmp);
++                mixed_prefill_raw_lds_qk_to_bf16_regs<false, Element, InputElement>(k_lds, raw_tile_offset, k_reg_tmp);
+             }
+             if constexpr (!UseCompactLds) {
+                 #pragma unroll
+@@ -423,7 +423,7 @@ __forceinline__ __device__ void  qk_gemm_prefetch_v_headdim128(
+         __builtin_amdgcn_sched_barrier(0);
+         if constexpr (UseCompactLds) {
+             const int raw_tile_offset = (last_stage_id * STAGES) * (WARP_N / 32) * (kBlockK / 32) * (32 * 34);
+-            mixed_prefill_raw_lds_qk_to_bf16_regs<false>(k_lds, raw_tile_offset, k_reg);
++            mixed_prefill_raw_lds_qk_to_bf16_regs<false, Element, InputElement>(k_lds, raw_tile_offset, k_reg);
+         }
+         if constexpr (!UseCompactLds) {
+         #pragma unroll
+@@ -460,7 +460,7 @@ __forceinline__ __device__ void  qk_gemm_prefetch_v_headdim128(
+             __builtin_amdgcn_sched_barrier(0);
+             if constexpr (UseCompactLds) {
+                 const int raw_tile_offset = (last_stage_id * STAGES + 1) * (WARP_N / 32) * (kBlockK / 32) * (32 * 34);
+-                mixed_prefill_raw_lds_qk_to_bf16_regs<false>(k_lds, raw_tile_offset, k_reg_tmp);
++                mixed_prefill_raw_lds_qk_to_bf16_regs<false, Element, InputElement>(k_lds, raw_tile_offset, k_reg_tmp);
+             }
+             if constexpr (!UseCompactLds) {
+                 #pragma unroll
+@@ -700,7 +700,7 @@ __forceinline__ __device__ void  qk_gemm_prefetch_v_headdim128(
+             __builtin_amdgcn_sched_barrier(0);
+             if constexpr (UseCompactLds) {
+                 const int raw_tile_offset = (stage_id * STAGES) * (WARP_N / 32) * (kBlockK / 32) * (32 * 34);
+-                mixed_prefill_raw_lds_qk_to_bf16_regs<false>(k_lds, raw_tile_offset, k_reg);
++                mixed_prefill_raw_lds_qk_to_bf16_regs<false, Element, InputElement>(k_lds, raw_tile_offset, k_reg);
+             }
+ 
+             // lds -> vgpr
+@@ -736,7 +736,7 @@ __forceinline__ __device__ void  qk_gemm_prefetch_v_headdim128(
+                 __builtin_amdgcn_sched_barrier(0);
+                 if constexpr (UseCompactLds) {
+                     const int raw_tile_offset = (stage_id * STAGES + 1) * (WARP_N / 32) * (kBlockK / 32) * (32 * 34);
+-                    mixed_prefill_raw_lds_qk_to_bf16_regs<false>(k_lds, raw_tile_offset, k_reg_tmp);
++                    mixed_prefill_raw_lds_qk_to_bf16_regs<false, Element, InputElement>(k_lds, raw_tile_offset, k_reg_tmp);
+                 }
+ 
+                 if constexpr (!UseCompactLds) {
+@@ -981,7 +981,7 @@ __forceinline__ __device__ void  qk_gemm_prefetch_v_headdim128(
+         __builtin_amdgcn_sched_barrier(0);
+         if constexpr (UseCompactLds) {
+             const int raw_tile_offset = (last_stage_id * STAGES) * (WARP_N / 32) * (kBlockK / 32) * (32 * 34);
+-            mixed_prefill_raw_lds_qk_to_bf16_regs<false>(k_lds, raw_tile_offset, k_reg);
++            mixed_prefill_raw_lds_qk_to_bf16_regs<false, Element, InputElement>(k_lds, raw_tile_offset, k_reg);
+         }
+ 
+         // lds -> vgpr
+@@ -1019,7 +1019,7 @@ __forceinline__ __device__ void  qk_gemm_prefetch_v_headdim128(
+             __builtin_amdgcn_sched_barrier(0);
+             if constexpr (UseCompactLds) {
+                 const int raw_tile_offset = (last_stage_id * STAGES + 1) * (WARP_N / 32) * (kBlockK / 32) * (32 * 34);
+-                mixed_prefill_raw_lds_qk_to_bf16_regs<false>(k_lds, raw_tile_offset, k_reg_tmp);
++                mixed_prefill_raw_lds_qk_to_bf16_regs<false, Element, InputElement>(k_lds, raw_tile_offset, k_reg_tmp);
+             }
+             if constexpr (!UseCompactLds) {
+             #pragma unroll
+diff --git a/csrc/flash_attn_hipc/include/fwd/qk_gemm_utils.h b/csrc/flash_attn_hipc/include/fwd/qk_gemm_utils.h
+index d9ec9e0..b85910a 100644
+--- a/csrc/flash_attn_hipc/include/fwd/qk_gemm_utils.h
++++ b/csrc/flash_attn_hipc/include/fwd/qk_gemm_utils.h
+@@ -4,10 +4,11 @@
+ #include "static_switch.h"
+ #include "pv_gemm_utils.h"
+ 
+-template <bool CrossWave, typename ComputeElement>
++template <bool CrossWave, typename ComputeElement, typename InputElement = fp8_e5m2>
+ __forceinline__ __device__ void mixed_prefill_raw_lds_qk_to_bf16_regs(
+     ComputeElement *const shared_addr, const int lds_tile_offset, union_vec4_f16x2<ComputeElement> output[2]) {
+     static_assert(std::is_same_v<ComputeElement, BFloat16>);
++    static_assert(std::is_same_v<InputElement, fp8_e5m2> || std::is_same_v<InputElement, fp8_e4m3>);
+     if constexpr (CrossWave) {
+         __syncthreads();
+     }
+@@ -36,7 +37,11 @@ __forceinline__ __device__ void mixed_prefill_raw_lds_qk_to_bf16_regs(
+     for (int i = 0; i < 2; ++i) {
+ #pragma unroll
+         for (int j = 0; j < 4; ++j) {
+-            reinterpret_cast<uint32_t *>(&output[i])[j] = e5m2x2_to_bf16x2(static_cast<uint16_t>(raw[i][j]));
++            if constexpr (std::is_same_v<InputElement, fp8_e5m2>) {
++                reinterpret_cast<uint32_t *>(&output[i])[j] = e5m2x2_to_bf16x2(static_cast<uint16_t>(raw[i][j]));
++            } else {
++                reinterpret_cast<uint32_t *>(&output[i])[j] = e4m3x2_to_bf16x2(static_cast<uint16_t>(raw[i][j]));
++            }
+         }
+     }
+ }
+@@ -68,15 +73,20 @@ __forceinline__ __device__ void mixed_prefill_raw_lds_qk_issue(ComputeElement *c
+     }
+ }
+ 
+-template <int Half, typename ComputeElement>
++template <int Half, typename ComputeElement, typename InputElement = fp8_e5m2>
+ __forceinline__ __device__ void mixed_prefill_raw_qk_cast_half(union_vec4_f16x2<ComputeElement> output[2]) {
+     static_assert(std::is_same_v<ComputeElement, BFloat16>);
++    static_assert(std::is_same_v<InputElement, fp8_e5m2> || std::is_same_v<InputElement, fp8_e4m3>);
+     static_assert(Half == 0 || Half == 1);
+     __builtin_amdgcn_sched_barrier(0);
+ #pragma unroll
+     for (int j = 0; j < 4; ++j) {
+         uint32_t *const word = &reinterpret_cast<uint32_t *>(&output[Half])[j];
+-        *word = e5m2x2_to_bf16x2(static_cast<uint16_t>(*word));
++        if constexpr (std::is_same_v<InputElement, fp8_e5m2>) {
++            *word = e5m2x2_to_bf16x2(static_cast<uint16_t>(*word));
++        } else {
++            *word = e4m3x2_to_bf16x2(static_cast<uint16_t>(*word));
++        }
+     }
+     __builtin_amdgcn_sched_barrier(0);
+ }
+@@ -129,7 +139,7 @@ __forceinline__ __device__ void  prefetch_q_to_vgpr(
+ 
+             const int tile_offset = (raw_stage_id * WARP_NUM + WARP_ID) * kTileElements;
+             union_vec4_f16x2<Element> q_fragment[2];
+-            mixed_prefill_raw_lds_qk_to_bf16_regs<false>(q_lds, tile_offset, q_fragment);
++            mixed_prefill_raw_lds_qk_to_bf16_regs<false, Element, InputElement>(q_lds, tile_offset, q_fragment);
+ #pragma unroll
+             for (int i = 0; i < 2; ++i) {
+ #pragma unroll
+diff --git a/csrc/flash_attn_hipc/include/intrinsic.h b/csrc/flash_attn_hipc/include/intrinsic.h
+index 2c25afb..a4d4883 100644
+--- a/csrc/flash_attn_hipc/include/intrinsic.h
++++ b/csrc/flash_attn_hipc/include/intrinsic.h
+@@ -647,23 +647,21 @@ __host__ __device__
+ static float __e4m32float(const uint8_t src) {
+     // initialize ret value
+     float result;
+-    // conversion from float to unsigned int(32 bits) for convience to fetching each bit
+-    uint8_t __src = *(uint8_t*)&src;
+     // fetch sign bits
+-    uint32_t sign_bits = __src & 0x80;
++    uint32_t sign_bits = src & 0x80;
+     // fetch exponent bits
+-    uint32_t exp_bits  = (__src & 0x78) >> e4m3_mant_bits;
++    uint32_t exp_bits  = (src & 0x78) >> e4m3_mant_bits;
+     // fetch mantissa bits
+-    uint32_t mant_bits = __src & 0x7;
++    uint32_t mant_bits = src & 0x7;
+     // denorm or 0
+-    if (exp_bits == 0x0 and mant_bits >= 0x0) {
++    if (exp_bits == 0x0) {
+         result = 0.0078125f * ((mant_bits & 0x4) >> 2) + 0.00390625f * ((mant_bits & 0x2) >> 1) + 0.001953125f * (mant_bits & 0x1);
+         result = sign_bits > 0 ? -result: result;
+     } else {
+         uint32_t tmp = (exp_bits == 0xf and mant_bits == 0x7)
+             ? /*input NaN*/0x7fffffff
+             : /*input norm*/(sign_bits << (fp32_bits - e4m3_bits)) + ((exp_bits - e4m3_bias + fp32_bias) << fp32_mant_bits) + (mant_bits << (fp32_mant_bits - e4m3_mant_bits));
+-        result = *(float*)&tmp;
++        __builtin_memcpy(&result, &tmp, sizeof(float));
+     }
+     return result;
+ }
+diff --git a/csrc/flash_attn_hipc/include/kernel_traits.h b/csrc/flash_attn_hipc/include/kernel_traits.h
+index f1f6e8a..f9b6cfb 100644
+--- a/csrc/flash_attn_hipc/include/kernel_traits.h
++++ b/csrc/flash_attn_hipc/include/kernel_traits.h
+@@ -62,16 +62,17 @@ struct Flash_fwd_kernel_traits : public Base {
+ 
+ };
+ 
+-// gfx936 E5M2-storage/BF16-compute traits. The base contract already separates compute type (Element), output/split
++// gfx936 FP8-storage/BF16-compute traits. The base contract already separates compute type (Element), output/split
+ // type (SplitkvAccumType), and input storage type (Element_k), so the mixed path only specializes those existing
+-// parameters and the compact LDS sizes.
++// parameters and the compact LDS sizes. The Element_k template parameter (default fp8_e5m2) selects the FP8 storage
++// flavor; fp8_e4m3 is also supported so the same mixed kernel can dequant E4M3 KV cache on gfx936.
+ template <int kHeadDim, int kHeadDimV, int kBlockM, int kBlockN, int kBlockK, int kWaveM, int kWaveN, int Stages,
+-          typename OutputElement>
++          typename OutputElement, typename elem_type_k = fp8_e5m2>
+ struct Flash_fp8_bf16_fwd_kernel_traits
+     : public Flash_fwd_kernel_traits<kHeadDim, kHeadDimV, kBlockM, kBlockN, kBlockK, kWaveM, kWaveN, Stages, false,
+-                                     false, BFloat16, OutputElement, fp8_e5m2> {
++                                     false, BFloat16, OutputElement, elem_type_k> {
+     using Base = Flash_fwd_kernel_traits<kHeadDim, kHeadDimV, kBlockM, kBlockN, kBlockK, kWaveM, kWaveN, Stages, false,
+-                                         false, BFloat16, OutputElement, fp8_e5m2>;
++                                         false, BFloat16, OutputElement, elem_type_k>;
+     static_assert(sizeof(typename Base::Element_k) == 1);
+     static constexpr size_t q_smem_size =
+         Stages * (kBlockM / 32) * (kBlockK / 32) * (32 * 34) * sizeof(typename Base::Element_k);
+diff --git a/csrc/flash_attn_hipc/include/kvcache/kvcache_pv_gemm_utils_tile16x32.h b/csrc/flash_attn_hipc/include/kvcache/kvcache_pv_gemm_utils_tile16x32.h
+index cf6f56d..d0c61a6 100644
+--- a/csrc/flash_attn_hipc/include/kvcache/kvcache_pv_gemm_utils_tile16x32.h
++++ b/csrc/flash_attn_hipc/include/kvcache/kvcache_pv_gemm_utils_tile16x32.h
+@@ -39,11 +39,12 @@ __forceinline__ __device__ void mixed_decode_load_v_32x64_stage(const vec4_uint
+     }
+ }
+ 
+-template <typename Element>
++template <typename Element, typename InputElement = fp8_e5m2>
+ __forceinline__ __device__ void mixed_decode_read_v_32x64_half(Element *const v_lds, const int stage_id,
+                                                                const int half_id, const int warp_id,
+                                                                union_vec2_f16x2<Element> v_reg[4]) {
+     static_assert(std::is_same_v<Element, BFloat16>);
++    static_assert(std::is_same_v<InputElement, fp8_e5m2> || std::is_same_v<InputElement, fp8_e4m3>);
+     constexpr int kRows = 32;
+     constexpr int kColumns = 64;
+     constexpr int kStageBytes = kRows * kColumns;
+@@ -66,15 +67,24 @@ __forceinline__ __device__ void mixed_decode_read_v_32x64_half(Element *const v_
+     __builtin_amdgcn_sched_barrier(0);
+ #pragma unroll
+     for (int vec_idx = 0; vec_idx < 4; ++vec_idx) {
++        uint32_t bf0;
++        uint32_t bf1;
++        if constexpr (std::is_same_v<InputElement, fp8_e5m2>) {
++            bf0 = e5m2x2_to_bf16x2(static_cast<uint16_t>(input0[vec_idx]));
++            bf1 = e5m2x2_to_bf16x2(static_cast<uint16_t>(input1[vec_idx]));
++        } else {
++            bf0 = e4m3x2_to_bf16x2(static_cast<uint16_t>(input0[vec_idx]));
++            bf1 = e4m3x2_to_bf16x2(static_cast<uint16_t>(input1[vec_idx]));
++        }
+         const uint64_t packed_bf16 =
+-            static_cast<uint64_t>(e5m2x2_to_bf16x2(static_cast<uint16_t>(input0[vec_idx]))) |
+-            (static_cast<uint64_t>(e5m2x2_to_bf16x2(static_cast<uint16_t>(input1[vec_idx]))) << 32);
++            static_cast<uint64_t>(bf0) | (static_cast<uint64_t>(bf1) << 32);
+         v_reg[vec_idx].f32 = __builtin_bit_cast(vec2_fp32, packed_bf16);
+     }
+ }
+ 
+ template <int K_LOOP_COUNT, int kBlockM, int kBlockN, int kBlockK, int M_WARP_COUNT, int PV_N_WARP_COUNT,
+-          int PV_K_WARP_COUNT, int STAGES, int WARP_NUM, int M_MMAC_COUNT, typename Element, typename ElementAccum>
++          int PV_K_WARP_COUNT, int STAGES, int WARP_NUM, int M_MMAC_COUNT, typename Element, typename ElementAccum,
++          typename InputElement = fp8_e5m2>
+ __forceinline__ __device__ void
+ mixed_kvcache_pv_gemm_32x64(const vec4_uint v_addr, Element *const v_lds,
+                             union_vec2_f16x2<Element> p_reg[M_WARP_COUNT * PV_K_WARP_COUNT][4],
+@@ -86,6 +96,7 @@ mixed_kvcache_pv_gemm_32x64(const vec4_uint v_addr, Element *const v_lds,
+     static_assert(STAGES == 2);
+     static_assert(M_MMAC_COUNT == 1 || M_MMAC_COUNT == 2);
+     static_assert(K_LOOP_COUNT % 2 == 0 && (WARP_NUM == 2 || WARP_NUM == 4));
++    static_assert(std::is_same_v<InputElement, fp8_e5m2> || std::is_same_v<InputElement, fp8_e4m3>);
+     constexpr int kRawStageCount = K_LOOP_COUNT / 2;
+     int stage_id = 0;
+ 
+@@ -101,7 +112,7 @@ mixed_kvcache_pv_gemm_32x64(const vec4_uint v_addr, Element *const v_lds,
+ #pragma unroll
+         for (int half_id = 0; half_id < 2; ++half_id) {
+             union_vec2_f16x2<Element> v_reg[4];
+-            mixed_decode_read_v_32x64_half(v_lds, stage_id, half_id, warp_id, v_reg);
++            mixed_decode_read_v_32x64_half<Element, InputElement>(v_lds, stage_id, half_id, warp_id, v_reg);
+ #pragma unroll
+             for (int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
+                 vec4_Element<Element> v_vgpr[2];
+@@ -136,7 +147,7 @@ mixed_kvcache_pv_gemm_32x64(const vec4_uint v_addr, Element *const v_lds,
+ #pragma unroll
+     for (int half_id = 0; half_id < 2; ++half_id) {
+         union_vec2_f16x2<Element> v_reg[4];
+-        mixed_decode_read_v_32x64_half(v_lds, stage_id, half_id, warp_id, v_reg);
++        mixed_decode_read_v_32x64_half<Element, InputElement>(v_lds, stage_id, half_id, warp_id, v_reg);
+ #pragma unroll
+         for (int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
+             vec4_Element<Element> v_vgpr[2];
+diff --git a/csrc/flash_attn_hipc/include/kvcache/kvcache_qk_gemm_utils_tile16x32.h b/csrc/flash_attn_hipc/include/kvcache/kvcache_qk_gemm_utils_tile16x32.h
+index a5f7389..2a0c97f 100644
+--- a/csrc/flash_attn_hipc/include/kvcache/kvcache_qk_gemm_utils_tile16x32.h
++++ b/csrc/flash_attn_hipc/include/kvcache/kvcache_qk_gemm_utils_tile16x32.h
+@@ -31,11 +31,12 @@ __forceinline__ __device__ void mixed_decode_load_q_16x64_stage(const vec4_uint
+     }
+ }
+ 
+-template <int M_MMAC_COUNT, typename Element>
++template <int M_MMAC_COUNT, typename Element, typename InputElement = fp8_e5m2>
+ __forceinline__ __device__ void mixed_decode_read_q_16x64_half(Element *const q_lds, const int stage_id,
+                                                                const int half_id,
+                                                                union_vec4_f16x2<Element> q_reg[M_MMAC_COUNT]) {
+     static_assert(std::is_same_v<Element, BFloat16>);
++    static_assert(std::is_same_v<InputElement, fp8_e5m2> || std::is_same_v<InputElement, fp8_e4m3>);
+     static_assert(M_MMAC_COUNT == 1 || M_MMAC_COUNT == 2);
+     constexpr int kRows = 16 * M_MMAC_COUNT;
+     constexpr int kColumns = 64;
+@@ -61,20 +62,26 @@ __forceinline__ __device__ void mixed_decode_read_q_16x64_half(Element *const q_
+         vec4_uint output;
+ #pragma unroll
+         for (int word = 0; word < 2; ++word) {
+-            output[word * 2] = e5m2x2_to_bf16x2(static_cast<uint16_t>(input[min_tile_m][word]));
+-            output[word * 2 + 1] = e5m2x2_to_bf16x2(static_cast<uint16_t>(input[min_tile_m][word] >> 16));
++            if constexpr (std::is_same_v<InputElement, fp8_e5m2>) {
++                output[word * 2] = e5m2x2_to_bf16x2(static_cast<uint16_t>(input[min_tile_m][word]));
++                output[word * 2 + 1] = e5m2x2_to_bf16x2(static_cast<uint16_t>(input[min_tile_m][word] >> 16));
++            } else {
++                output[word * 2] = e4m3x2_to_bf16x2(static_cast<uint16_t>(input[min_tile_m][word]));
++                output[word * 2 + 1] = e4m3x2_to_bf16x2(static_cast<uint16_t>(input[min_tile_m][word] >> 16));
++            }
+         }
+         q_reg[min_tile_m].f32 = __builtin_bit_cast(vec4_fp32, output);
+     }
+ }
+ 
+ template <int kHeadDim, int kBlockM, int kBlockK, int WARP_M, int WARP_NUM, typename Element, int STAGES,
+-          int M_MMAC_COUNT>
++          int M_MMAC_COUNT, typename InputElement = fp8_e5m2>
+ __forceinline__ __device__ void mixed_kvcache_prefetch_q_to_vgpr_16x64(
+     const vec4_uint q_addr, Element *const q_lds,
+     union_vec4_f16x2<Element> q_reg[(kHeadDim / kBlockK) * ((WARP_M * kBlockK) / (32 * 32)) * 2], const int warp_id,
+     const int query_seqlen_stride, const int max_seq_q_offset) {
+     static_assert(std::is_same_v<Element, BFloat16>);
++    static_assert(std::is_same_v<InputElement, fp8_e5m2> || std::is_same_v<InputElement, fp8_e4m3>);
+     static_assert(kBlockM == 32 && kBlockK == 32 && WARP_M == 32);
+     static_assert(STAGES == 2);
+     static_assert(M_MMAC_COUNT == 1 || M_MMAC_COUNT == 2);
+@@ -99,7 +106,8 @@ __forceinline__ __device__ void mixed_kvcache_prefetch_q_to_vgpr_16x64(
+ #pragma unroll
+         for (int half_id = 0; half_id < 2; ++half_id) {
+             const int logical_k_loop = raw_stage * 2 + half_id;
+-            mixed_decode_read_q_16x64_half<M_MMAC_COUNT>(q_lds, stage_id, half_id, q_reg + logical_k_loop * 2);
++            mixed_decode_read_q_16x64_half<M_MMAC_COUNT, Element, InputElement>(q_lds, stage_id, half_id,
++                                                                                  q_reg + logical_k_loop * 2);
+         }
+         // All waves read the shared Q stage.  Do not reuse it until every
+         // wave has captured its BF16 fragments in registers.
+@@ -114,7 +122,8 @@ __forceinline__ __device__ void mixed_kvcache_prefetch_q_to_vgpr_16x64(
+ #pragma unroll
+     for (int half_id = 0; half_id < 2; ++half_id) {
+         const int logical_k_loop = (kRawStageCount - 1) * 2 + half_id;
+-        mixed_decode_read_q_16x64_half<M_MMAC_COUNT>(q_lds, stage_id, half_id, q_reg + logical_k_loop * 2);
++        mixed_decode_read_q_16x64_half<M_MMAC_COUNT, Element, InputElement>(q_lds, stage_id, half_id,
++                                                                              q_reg + logical_k_loop * 2);
+     }
+     __syncthreads();
+ }
+@@ -143,11 +152,12 @@ __forceinline__ __device__ void mixed_decode_load_k_32x64_stage(const vec4_uint
+     }
+ }
+ 
+-template <typename Element>
++template <typename Element, typename InputElement = fp8_e5m2>
+ __forceinline__ __device__ void mixed_decode_read_k_32x64_half(Element *const k_lds, const int stage_id,
+                                                                const int half_id, const int warp_id,
+                                                                union_vec4_f16x2<Element> k_reg[2]) {
+     static_assert(std::is_same_v<Element, BFloat16>);
++    static_assert(std::is_same_v<InputElement, fp8_e5m2> || std::is_same_v<InputElement, fp8_e4m3>);
+     constexpr int kRows = 32;
+     constexpr int kColumns = 64;
+     constexpr int kStageBytes = kRows * kColumns;
+@@ -166,10 +176,17 @@ __forceinline__ __device__ void mixed_decode_read_k_32x64_half(Element *const k_
+     vec4_uint output1;
+ #pragma unroll
+     for (int word = 0; word < 2; ++word) {
+-        output0[word * 2] = e5m2x2_to_bf16x2(static_cast<uint16_t>(input0[word]));
+-        output0[word * 2 + 1] = e5m2x2_to_bf16x2(static_cast<uint16_t>(input0[word] >> 16));
+-        output1[word * 2] = e5m2x2_to_bf16x2(static_cast<uint16_t>(input1[word]));
+-        output1[word * 2 + 1] = e5m2x2_to_bf16x2(static_cast<uint16_t>(input1[word] >> 16));
++        if constexpr (std::is_same_v<InputElement, fp8_e5m2>) {
++            output0[word * 2] = e5m2x2_to_bf16x2(static_cast<uint16_t>(input0[word]));
++            output0[word * 2 + 1] = e5m2x2_to_bf16x2(static_cast<uint16_t>(input0[word] >> 16));
++            output1[word * 2] = e5m2x2_to_bf16x2(static_cast<uint16_t>(input1[word]));
++            output1[word * 2 + 1] = e5m2x2_to_bf16x2(static_cast<uint16_t>(input1[word] >> 16));
++        } else {
++            output0[word * 2] = e4m3x2_to_bf16x2(static_cast<uint16_t>(input0[word]));
++            output0[word * 2 + 1] = e4m3x2_to_bf16x2(static_cast<uint16_t>(input0[word] >> 16));
++            output1[word * 2] = e4m3x2_to_bf16x2(static_cast<uint16_t>(input1[word]));
++            output1[word * 2 + 1] = e4m3x2_to_bf16x2(static_cast<uint16_t>(input1[word] >> 16));
++        }
+     }
+     k_reg[0].f32 = __builtin_bit_cast(vec4_fp32, output0);
+     k_reg[1].f32 = __builtin_bit_cast(vec4_fp32, output1);
+@@ -186,7 +203,7 @@ __forceinline__ __device__ void mixed_kvcache_prefetch_k_to_lds_32x64(const vec4
+ }
+ 
+ template <int kHeadDim, int kHeadDimV, int kBlockM, int kBlockN, int kBlockK, int WARP_M, int WARP_N, int WARP_NUM,
+-          int STAGES, int M_MMAC_COUNT, typename Element, typename ElementAccum>
++          int STAGES, int M_MMAC_COUNT, typename Element, typename ElementAccum, typename InputElement = fp8_e5m2>
+ __forceinline__ __device__ void mixed_kvcache_qk_gemm_prefetch_v_32x64(
+     const vec4_uint k_addr, const vec4_uint v_addr, Element *const k_lds, Element *const v_lds,
+     union_vec4_f16x2<Element> q_reg[(kHeadDim / kBlockK) * (WARP_M * kBlockK) / (32 * 32) * 2],
+@@ -197,6 +214,7 @@ __forceinline__ __device__ void mixed_kvcache_qk_gemm_prefetch_v_32x64(
+     static_assert(M_MMAC_COUNT == 1 || M_MMAC_COUNT == 2);
+     static_assert(WARP_NUM == 2 || WARP_NUM == 4);
+     static_assert(kHeadDim % 64 == 0 && kHeadDimV % 64 == 0);
++    static_assert(std::is_same_v<InputElement, fp8_e5m2> || std::is_same_v<InputElement, fp8_e4m3>);
+     constexpr int kRawStageCount = kHeadDim / 64;
+     union_vec4_f16x2<Element> k_reg[2];
+ 
+@@ -225,7 +243,7 @@ __forceinline__ __device__ void mixed_kvcache_qk_gemm_prefetch_v_32x64(
+ 
+ #pragma unroll
+         for (int half_id = 0; half_id < 2; ++half_id) {
+-            mixed_decode_read_k_32x64_half(k_lds, stage_id, half_id, warp_id, k_reg);
++            mixed_decode_read_k_32x64_half<Element, InputElement>(k_lds, stage_id, half_id, warp_id, k_reg);
+             asm volatile("s_setprio 1");
+ #pragma unroll
+             for (int min_tile_n = 0; min_tile_n < 2; ++min_tile_n) {
+@@ -257,7 +275,7 @@ __forceinline__ __device__ void mixed_kvcache_qk_gemm_prefetch_v_32x64(
+     __builtin_amdgcn_sched_barrier(0);
+ #pragma unroll
+     for (int half_id = 0; half_id < 2; ++half_id) {
+-        mixed_decode_read_k_32x64_half(k_lds, stage_id, half_id, warp_id, k_reg);
++        mixed_decode_read_k_32x64_half<Element, InputElement>(k_lds, stage_id, half_id, warp_id, k_reg);
+         asm volatile("s_setprio 1");
+ #pragma unroll
+         for (int min_tile_n = 0; min_tile_n < 2; ++min_tile_n) {
+diff --git a/csrc/flash_attn_hipc/src/flash_fwd_b16_fa.h b/csrc/flash_attn_hipc/src/flash_fwd_b16_fa.h
+index add4cbc..672eaf3 100644
+--- a/csrc/flash_attn_hipc/src/flash_fwd_b16_fa.h
++++ b/csrc/flash_attn_hipc/src/flash_fwd_b16_fa.h
+@@ -2321,7 +2321,8 @@ inline __device__ void compute_mixed_attn_mha_prefix_prefill_1rowblock(const Par
+     using InputElement = typename Kernel_traits::Element_k;
+     using OutputElement = typename Kernel_traits::SplitkvAccumType;
+     using ElementAccum = typename Kernel_traits::ElementAccum;
+-    static_assert(std::is_same_v<Element, BFloat16> && std::is_same_v<InputElement, fp8_e5m2>);
++    static_assert(std::is_same_v<Element, BFloat16>);
++    static_assert(std::is_same_v<InputElement, fp8_e5m2> || std::is_same_v<InputElement, fp8_e4m3>);
+     constexpr int kBlockM = Kernel_traits::kBlockM;
+     constexpr int kBlockN = Kernel_traits::kBlockN;
+     constexpr int kBlockK = Kernel_traits::kBlockK;
+diff --git a/csrc/flash_attn_hipc/src/flash_fwd_b16_pa.h b/csrc/flash_attn_hipc/src/flash_fwd_b16_pa.h
+index a817319..bb7b0f8 100644
+--- a/csrc/flash_attn_hipc/src/flash_fwd_b16_pa.h
++++ b/csrc/flash_attn_hipc/src/flash_fwd_b16_pa.h
+@@ -565,7 +565,8 @@ inline __device__ void compute_mixed_attn_1rowblock_splitkv_tile16x32(const Para
+     using InputElement = typename Kernel_traits::Element_k;
+     using ElementAccum = typename Kernel_traits::ElementAccum;
+     using SplitkvAccumType = typename Kernel_traits::SplitkvAccumType;
+-    static_assert(std::is_same_v<Element, BFloat16> && std::is_same_v<InputElement, fp8_e5m2>);
++    static_assert(std::is_same_v<Element, BFloat16>);
++    static_assert(std::is_same_v<InputElement, fp8_e5m2> || std::is_same_v<InputElement, fp8_e4m3>);
+     constexpr int kBlockM = Kernel_traits::kBlockM;
+     constexpr int kBlockN = Kernel_traits::kBlockN;
+     constexpr int kBlockK = Kernel_traits::kBlockK;
+@@ -674,7 +675,8 @@ inline __device__ void compute_mixed_attn_1rowblock_splitkv_tile16x32(const Para
+     constexpr int K_LOOP_COUNT = kHeadDimVSplit / kBlockK;
+     constexpr int Q_LOAD_BLOCKS = STAGES == 2 ? kHeadDim / kBlockK : 1;
+     union_vec4_f16x2<Element> q_reg[Q_LOAD_BLOCKS * M_WARP_COUNT * K_WARP_COUNT * 2];
+-    mixed_kvcache_prefetch_q_to_vgpr_16x64<kHeadDim, kBlockM, kBlockK, WARP_M, WARP_NUM, Element, STAGES, M_MMAC_COUNT>(
++    mixed_kvcache_prefetch_q_to_vgpr_16x64<kHeadDim, kBlockM, kBlockK, WARP_M, WARP_NUM, Element, STAGES, M_MMAC_COUNT,
++                                           InputElement>(
+         q_addr, q_lds, q_reg, warp_id, query_seqlen_stride, actual_seqlen_q - m_block * kBlockM);
+ 
+     vec2_Accum<ElementAccum> scores_max[M_WARP_COUNT];
+@@ -691,7 +693,7 @@ inline __device__ void compute_mixed_attn_1rowblock_splitkv_tile16x32(const Para
+         mixed_kvcache_prefetch_k_to_lds_32x64<kBlockK, WARP_N, Element, STAGES, WARP_NUM>(
+             k_addr, k_lds, warp_id, kcache_seqlen_stride, warp_seqkv_limit);
+         mixed_kvcache_qk_gemm_prefetch_v_32x64<kHeadDim, kHeadDimVSplit, kBlockM, WARP_N, kBlockK, WARP_M, WARP_N,
+-                                               WARP_NUM, STAGES, M_MMAC_COUNT, Element, ElementAccum>(
++                                               WARP_NUM, STAGES, M_MMAC_COUNT, Element, ElementAccum, InputElement>(
+             k_addr, v_addr, k_lds, v_lds, q_reg, s_reg, warp_id, kcache_seqlen_stride, vcache_seqlen_stride,
+             warp_seqkv_limit);
+ 
+@@ -733,7 +735,7 @@ inline __device__ void compute_mixed_attn_1rowblock_splitkv_tile16x32(const Para
+         const int offset_diff = block_table_offset_next - block_table_offset_cur;
+ 
+         mixed_kvcache_pv_gemm_32x64<K_LOOP_COUNT, kBlockM, kBlockK, kBlockN, M_WARP_COUNT, K_WARP_COUNT,
+-                                    N_WARP_COUNT, STAGES, WARP_NUM, M_MMAC_COUNT, Element, ElementAccum>(
++                                    N_WARP_COUNT, STAGES, WARP_NUM, M_MMAC_COUNT, Element, ElementAccum, InputElement>(
+             v_addr, v_lds, p_reg, acc_o, warp_id, vcache_seqlen_stride, warp_seqkv_limit);
+         *(int64_t *)&k_addr +=
+             (int64_t(table_diff) * int64_t(params.k_batch_stride) + offset_diff * int64_t(params.k_row_stride)) *
+diff --git a/csrc/flash_attn_hipc/src/flash_fwd_launch_template.h b/csrc/flash_attn_hipc/src/flash_fwd_launch_template.h
+index 3f083ed..146188f 100644
+--- a/csrc/flash_attn_hipc/src/flash_fwd_launch_template.h
++++ b/csrc/flash_attn_hipc/src/flash_fwd_launch_template.h
+@@ -838,25 +838,49 @@ void run_fp8_flash_fwd_prefix_prefill(Flash_fwd_params &params, hipStream_t stre
+                 Flash_fwd_kernel_traits<Headdim, HeaddimV, 128, 128, 32, 32, 32, 2, false, false, T, Float16, fp8_e4m3>>(params, stream);
+         }
+     }
+-    if (gcn_arch == 936 && params.is_e5m2) {
++    if (gcn_arch == 936 && (params.is_e5m2 || params.is_e4m3)) {
+         BOOL_SWITCH(params.is_causal, Is_causal, [&] {
+             const int seq_len = params.seqlen_q;
+-            if (seq_len < 32) {
+-                run_flash_mixed_fwd_prefix_prefill_launcher<
+-                    Flash_fp8_bf16_fwd_kernel_traits<Headdim, HeaddimV, 32, 64, 32, 32, 32, 2, T>, Is_causal>(
+-                    params, stream);
+-            } else if (seq_len < 64 or Headdim >= 256) {
+-                run_flash_mixed_fwd_prefix_prefill_launcher<
+-                    Flash_fp8_bf16_fwd_kernel_traits<Headdim, HeaddimV, 64, 64, 32, 32, 32, 2, T>, Is_causal>(
+-                    params, stream);
+-            } else if (seq_len < 128 or params.page_block_size == 64) {
+-                run_flash_mixed_fwd_prefix_prefill_launcher<
+-                    Flash_fp8_bf16_fwd_kernel_traits<Headdim, HeaddimV, 128, 64, 32, 32, 32, 2, T>, Is_causal>(
+-                    params, stream);
++            // Select the FP8 storage flavor matching the cache layout: E5M2 keeps the original mixed kernel,
++            // E4M3 reuses the same prefill pipeline with a software dequant (__e4m32float) instead of the
++            // E5M2 bit-trick. The elem_type_k template parameter carries this choice through the read functions.
++            if (params.is_e5m2) {
++                if (seq_len < 32) {
++                    run_flash_mixed_fwd_prefix_prefill_launcher<
++                        Flash_fp8_bf16_fwd_kernel_traits<Headdim, HeaddimV, 32, 64, 32, 32, 32, 2, T, fp8_e5m2>, Is_causal>(
++                        params, stream);
++                } else if (seq_len < 64 or Headdim >= 256) {
++                    run_flash_mixed_fwd_prefix_prefill_launcher<
++                        Flash_fp8_bf16_fwd_kernel_traits<Headdim, HeaddimV, 64, 64, 32, 32, 32, 2, T, fp8_e5m2>, Is_causal>(
++                        params, stream);
++                } else if (seq_len < 128 or params.page_block_size == 64) {
++                    run_flash_mixed_fwd_prefix_prefill_launcher<
++                        Flash_fp8_bf16_fwd_kernel_traits<Headdim, HeaddimV, 128, 64, 32, 32, 32, 2, T, fp8_e5m2>, Is_causal>(
++                        params, stream);
++                } else {
++                    run_flash_mixed_fwd_prefix_prefill_launcher<
++                        Flash_fp8_bf16_fwd_kernel_traits<Headdim, HeaddimV, 128, 128, 32, 32, 32, 2, T, fp8_e5m2>, Is_causal>(
++                        params, stream);
++                }
+             } else {
+-                run_flash_mixed_fwd_prefix_prefill_launcher<
+-                    Flash_fp8_bf16_fwd_kernel_traits<Headdim, HeaddimV, 128, 128, 32, 32, 32, 2, T>, Is_causal>(
+-                    params, stream);
++                // params.is_e4m3
++                if (seq_len < 32) {
++                    run_flash_mixed_fwd_prefix_prefill_launcher<
++                        Flash_fp8_bf16_fwd_kernel_traits<Headdim, HeaddimV, 32, 64, 32, 32, 32, 2, T, fp8_e4m3>, Is_causal>(
++                        params, stream);
++                } else if (seq_len < 64 or Headdim >= 256) {
++                    run_flash_mixed_fwd_prefix_prefill_launcher<
++                        Flash_fp8_bf16_fwd_kernel_traits<Headdim, HeaddimV, 64, 64, 32, 32, 32, 2, T, fp8_e4m3>, Is_causal>(
++                        params, stream);
++                } else if (seq_len < 128 or params.page_block_size == 64) {
++                    run_flash_mixed_fwd_prefix_prefill_launcher<
++                        Flash_fp8_bf16_fwd_kernel_traits<Headdim, HeaddimV, 128, 64, 32, 32, 32, 2, T, fp8_e4m3>, Is_causal>(
++                        params, stream);
++                } else {
++                    run_flash_mixed_fwd_prefix_prefill_launcher<
++                        Flash_fp8_bf16_fwd_kernel_traits<Headdim, HeaddimV, 128, 128, 32, 32, 32, 2, T, fp8_e4m3>, Is_causal>(
++                        params, stream);
++                }
+             }
+         });
+         return;
+diff --git a/csrc/flash_attn_hipc/src/flash_fwd_launch_template_pa.h b/csrc/flash_attn_hipc/src/flash_fwd_launch_template_pa.h
+index 1ae9bbc..0d3d47f 100644
+--- a/csrc/flash_attn_hipc/src/flash_fwd_launch_template_pa.h
++++ b/csrc/flash_attn_hipc/src/flash_fwd_launch_template_pa.h
+@@ -350,7 +350,7 @@ void run_flash_mixed_splitkv_fwd_tile16x32(Flash_fwd_params &params, hipStream_t
+     using InputElement = typename Kernel_traits::Element_k;
+     using ReduceTraits = Flash_fp8_bf16_fwd_reduce_traits<Kernel_traits>;
+     static_assert(std::is_same_v<typename Kernel_traits::Element, BFloat16>);
+-    static_assert(std::is_same_v<InputElement, fp8_e5m2>);
++    static_assert(std::is_same_v<InputElement, fp8_e5m2> || std::is_same_v<InputElement, fp8_e4m3>);
+ 
+     constexpr int WARP_NUM = Kernel_traits::kBlockN / Kernel_traits::kWaveN;
+     constexpr size_t qv_lds_offset = 512 * sizeof(typename Kernel_traits::Element);
+@@ -693,20 +693,37 @@ void run_mha_fwd_splitkv_dispatch(Flash_fwd_params &params, hipStream_t stream)
+     constexpr bool use_gfx936_fp8_bf16 =
+         (Headdim == 128 and HeaddimV == 128) or
+         (Headdim == 192 and HeaddimV == 128) or
+-        (Headdim == 256 and HeaddimV == 256);
+-    if (arch_id == 936 && params.is_e5m2) {
++        (Headdim == 256 and HeaddimV == 256) or
++        (Headdim == 512 and HeaddimV == 512);
++    if (arch_id == 936 && (params.is_e5m2 || params.is_e4m3)) {
+         if constexpr (use_gfx936_fp8_bf16) {
+-            if (params.page_block_size == 64) {
+-                run_flash_mixed_splitkv_fwd_tile16x32<
+-                    Flash_fp8_bf16_fwd_kernel_traits<Headdim, HeaddimV, 32, 64, 32, 32, 32, 2, T>>(params, stream);
+-            } else if (params.page_block_size == 128) {
+-                run_flash_mixed_splitkv_fwd_tile16x32<
+-                    Flash_fp8_bf16_fwd_kernel_traits<Headdim, HeaddimV, 32, 128, 32, 32, 32, 2, T>>(params, stream);
++            // Select the FP8 storage flavor matching the cache layout: E5M2 keeps the original mixed kernel,
++            // E4M3 reuses the same tile-16x32 pipeline with a software dequant (__e4m32float) instead of the
++            // E5M2 bit-trick. The Element_k template parameter carries this choice through the read functions.
++            if (params.is_e5m2) {
++                if (params.page_block_size == 64) {
++                    run_flash_mixed_splitkv_fwd_tile16x32<
++                        Flash_fp8_bf16_fwd_kernel_traits<Headdim, HeaddimV, 32, 64, 32, 32, 32, 2, T, fp8_e5m2>>(params, stream);
++                } else if (params.page_block_size == 128) {
++                    run_flash_mixed_splitkv_fwd_tile16x32<
++                        Flash_fp8_bf16_fwd_kernel_traits<Headdim, HeaddimV, 32, 128, 32, 32, 32, 2, T, fp8_e5m2>>(params, stream);
++                } else {
++                    assert(false && "gfx936 E5M2 prefix decode page size must be 64 or 128");
++                }
+             } else {
+-                assert(false && "gfx936 E5M2 prefix decode page size must be 64 or 128");
++                // params.is_e4m3
++                if (params.page_block_size == 64) {
++                    run_flash_mixed_splitkv_fwd_tile16x32<
++                        Flash_fp8_bf16_fwd_kernel_traits<Headdim, HeaddimV, 32, 64, 32, 32, 32, 2, T, fp8_e4m3>>(params, stream);
++                } else if (params.page_block_size == 128) {
++                    run_flash_mixed_splitkv_fwd_tile16x32<
++                        Flash_fp8_bf16_fwd_kernel_traits<Headdim, HeaddimV, 32, 128, 32, 32, 32, 2, T, fp8_e4m3>>(params, stream);
++                } else {
++                    assert(false && "gfx936 E4M3 prefix decode page size must be 64 or 128");
++                }
+             }
+         } else {
+-            assert(false && "gfx936 E5M2 prefix decode head dimensions are not supported");
++            assert(false && "gfx936 FP8 prefix decode head dimensions are not supported");
+         }
+         return;
+     }
+diff --git a/setup.py b/setup.py
+index 12e1206..40a11c8 100755
+--- a/setup.py
++++ b/setup.py
+@@ -133,6 +133,8 @@ _HG_EXPLICIT_SOURCES_BY_MODE = {
+         "src/target/flash_fp8_fwd_hdimqk192_hdimv128_prefix_prefill_fp16.cpp",
+         "src/target/flash_fp8_fwd_hdim256_prefix_prefill_bf16.cpp",
+         "src/target/flash_fp8_fwd_hdim256_prefix_prefill_fp16.cpp",
++        "src/target/flash_fp8_fwd_hdim512_prefix_prefill_bf16.cpp",
++        "src/target/flash_fp8_fwd_hdim512_prefix_prefill_fp16.cpp",
+         "src/target/flash_fwd_hdim160_bf16.cpp",
+         "src/target/flash_fwd_hdim160_fp16.cpp",
+         "src/target/flash_fwd_hdim192_bf16.cpp",
+@@ -853,7 +855,7 @@ if not SKIP_CUDA_BUILD:
+     # HAS_HG_DISPATCH / -lflash_attention are applied there if the .so exists.
+     hg_compile_defs = []
+     hg_link_args = []
+-    main_ext_archs = _normalize_hg_gfx_archs("gfx938,gfx936,gfx928,gfx92a")
++    main_ext_archs = _normalize_hg_gfx_archs("gfx936")
+     main_ext_arch_flags = _main_ext_arch_device_flag_placeholders(main_ext_archs)
+     _patch_torch_write_ninja_file_for_main_ext_arch_flags()
+     main_ext_arch_flags_for_log = _expand_main_ext_arch_flag_placeholders(main_ext_arch_flags)
+@@ -1124,7 +1126,7 @@ if not SKIP_CUDA_BUILD:
+                         "-DBWDSEPARATE",
+                         # "-DFLASHATTENTION_DISABLE_SPLITKV",
+                         "-DBF162FLOAT_USE_ASM",
+-                        "--offload-arch=gfx938,gfx936,gfx928",
++                        "--offload-arch=gfx936",
+                         # "-DGEMM1_AMATRIX_WITH_SMEM",
+                         # "-U__CUDA_NO_HALF_OPERATORS__",
+                         # "-U__CUDA_NO_HALF_CONVERSIONS__",
+@@ -1287,12 +1289,12 @@ class NinjaBuildExtension(BuildExtension):
+                         HG_BUILD_DIR,
+                         mode="all",
+                         extra_options_raw=(
+-                            f"-DGFX_VERSION=938;936 -DFP8_NO_SCALES={'ON' if HG_FP8_NO_SCALES else 'OFF'} -Wl,-Bsymbolic"
++                            f"-DGFX_VERSION=936 -DFP8_NO_SCALES={'ON' if HG_FP8_NO_SCALES else 'OFF'} -Wl,-Bsymbolic"
+                         ),
+                     )
+                     print(
+                         "=== Building HG libflash_attention.so "
+-                        f"(mode=all, gfx938/gfx936, fp8_no_scales={HG_FP8_NO_SCALES}, ninja, compiler={desc['compiler']}) ==="
++                        f"(mode=all, gfx936-only, fp8_no_scales={HG_FP8_NO_SCALES}, ninja, compiler={desc['compiler']}) ==="
+                     )
+                     run_hg_ninja_build(desc)
+                     if os.path.isfile(HG_SO_BUILD):
+diff --git a/csrc/flash_attn_hipc/src/target/flash_fp8_fwd_hdim512_prefix_prefill_fp16.cpp b/csrc/flash_attn_hipc/src/target/flash_fp8_fwd_hdim512_prefix_prefill_fp16.cpp
+new file mode 100644
+index 0000000..6558c95
+--- /dev/null
++++ b/csrc/flash_attn_hipc/src/target/flash_fp8_fwd_hdim512_prefix_prefill_fp16.cpp
++// Copyright (c) 2025, Xin Zhou.
++// Splitting the different head dimensions to different files to speed up compilation.
++// This file is auto-generated. See "generate_kernels.py"
++//
++// gemma4 MTP draft 模型 full_attention 层 (global_head_dim=512) + fp8 KV prefill.
++// 实例化 run_fp8_mha_fwd_prefix_prefill_<Float16, 512, 512>, 复用 gfx936 mixed kernel.
++
++#include "../flash_fwd_launch_template.h"
++
++template<>
++void run_fp8_mha_fwd_prefix_prefill_<Float16, 512, 512>(Flash_fwd_params &params, hipStream_t stream) {
++#ifdef BUILD_FA_FWD
++    run_fp8_flash_fwd_prefix_prefill<Float16, 512, 512>(params, stream);
++#endif
++}
+diff --git a/csrc/flash_attn_hipc/src/target/flash_fp8_fwd_hdim512_prefix_prefill_bf16.cpp b/csrc/flash_attn_hipc/src/target/flash_fp8_fwd_hdim512_prefix_prefill_bf16.cpp
+new file mode 100644
+index 0000000..839a3cb
+--- /dev/null
++++ b/csrc/flash_attn_hipc/src/target/flash_fp8_fwd_hdim512_prefix_prefill_bf16.cpp
++// Copyright (c) 2025, Xin Zhou.
++// Splitting the different head dimensions to different files to speed up compilation.
++// This file is auto-generated. See "generate_kernels.py"
++//
++// gemma4 MTP draft 模型 full_attention 层 (global_head_dim=512) + fp8 KV prefill.
++// 实例化 run_fp8_mha_fwd_prefix_prefill_<BFloat16, 512, 512>, 复用 gfx936 mixed kernel.
++
++#include "../flash_fwd_launch_template.h"
++
++template<>
++void run_fp8_mha_fwd_prefix_prefill_<BFloat16, 512, 512>(Flash_fwd_params &params, hipStream_t stream) {
++#ifdef BUILD_FA_FWD
++    run_fp8_flash_fwd_prefix_prefill<BFloat16, 512, 512>(params, stream);
++#endif
++}

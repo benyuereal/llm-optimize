@@ -39,3 +39,6 @@ __pycache__/
 # 系统
 .DS_Store
 Thumbs.db
+
+# flash_attn whl 产物 (200M, 走 GitHub Release 附件, 不入库)
+*.whl

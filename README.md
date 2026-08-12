@@ -24,11 +24,25 @@ llm-optimize/
 │   ├── llm_proxy_v1.py  # 缓冲式修复代理（备用版）
 │   ├── probe_proxy.py   # 探测版（调试用，抓取畸形样本）
 │   └── requirements.txt # Python 依赖
-└── vllm/gemm/w4a16/     # aiter w4a16 GEMM 加速 (Hygon DCU)
-    ├── README.md        # 通用 patch 机制说明
-    ├── patch.sh         # 一键安装 / 回退
-    └── models/gemma4/   # gemma-4-31B-it-AWQ-4bit 调优 + 部署方案
-        └── DEPLOY.md    # ← 部署方案 (面向部署人员, 傻瓜式)
+├── bench/               # 通用评测脚本
+│   └── evalscope_humaneval.sh   # HumanEval 精度评测
+├── flash-attention-cutlass/     # 第二阶段: flash attn 源码 patch 归属 (源码改了哪些/怎么编译)
+│   ├── README.md
+│   ├── patch/           # 源码 patch + 改动说明 + 新增文件
+│   ├── dist/            # 编译产物 whl (git-lfs)
+│   └── scripts/         # 启动脚本
+└── vllm/
+    ├── gemm/w4a16/      # 第一阶段: aiter w4a16 GEMM 加速 (Hygon DCU)
+    │   ├── README.md    # 通用 patch 机制说明
+    │   ├── patch.sh     # 一键安装 / 回退
+    │   └── models/gemma4/   # gemma-4-31B-it-AWQ-4bit 调优 + 部署方案
+    │       └── DEPLOY.md    # ← 部署方案 (面向部署人员, 傻瓜式)
+    └── attn/flash/      # 第二阶段: flash fp8 KV + head_dim=512 加速 (部署视角)
+        ├── README.md    # 通用说明
+        ├── patch.sh     # 一键安装 / 回退
+        ├── flash_fp8e5m2_512.patch   # 源码改动 patch
+        └── models/gemma4/
+            └── DEPLOY.md    # ← 部署方案 (面向部署人员, 傻瓜式)
 ```
 
 ## vLLM w4a16 GEMM 加速 (Hygon DCU)
@@ -39,6 +53,17 @@ llm-optimize/
 部署人员请直接看 [`vllm/gemm/w4a16/models/gemma4/DEPLOY.md`](vllm/gemm/w4a16/models/gemma4/DEPLOY.md)
 (下载 → 一键安装 → 性能验证 → 精度验证,四步完成)。
 通用机制说明见 [`vllm/gemm/w4a16/README.md`](vllm/gemm/w4a16/README.md)。
+
+## vLLM flash attention 加速 (Hygon DCU, 第二阶段)
+
+gemma-4 的 MTP draft 模型有个 `full_attention` 层 (head_dim=512), 原来走 aiter 的 2D attention kernel, 很慢。
+第二阶段扩展 flash-attention-cutlass 的 fp8 mixed kernel 支持 head_dim=512 的 prefix decode + prefix prefill, 让 draft 侧改走 flash。
+
+效果: batch 4 TPOT 35.63ms (triton 基准 ~79ms, **1.68~2.2x 加速**), MTP 接受率 96.18%, 精度无损 (HumanEval 96.95% 与 triton 一致)。
+与第一阶段 w4a16 互不冲突, 可叠加。
+
+部署人员请直接看 [`vllm/attn/flash/models/gemma4/DEPLOY.md`](vllm/attn/flash/models/gemma4/DEPLOY.md)。
+通用机制说明见 [`vllm/attn/flash/README.md`](vllm/attn/flash/README.md)。
 
 ## 核心问题：MTP 导致工具调用参数结尾漂移
 
