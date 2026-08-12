@@ -36,9 +36,10 @@ gemma-4-31B-it-AWQ 的 MTP draft 模型有一个 `full_attention` 层：
 ```
 vllm/flash-attn/
 ├── README.md                          # 本文件
-├── patch.sh                           # 一键安装/回退/状态 (装 whl + 打 vllm 侧 patch)
+├── patch.sh                           # 一键安装/回退/状态 (装 whl + 打 vllm 侧 + aiter 侧 patch)
 ├── flash-attn.patch                   # flash-attention-cutlass 源码改动 patch (编译 whl 用, 已含在 dist/whl 里)
 ├── flash_fp8e5m2.patch                # vllm 侧 fp8_e5m2 patch (改 3 个 vllm 文件, install 时自动打)
+├── flash_aiter_fp8e5m2.patch          # aiter 侧 fp8_e5m2 patch (改 unified_attention.py, install 时自动打)
 ├── flash_fp8e5m2_512.md               # flash 源码改动详细说明（两层改动, 19 文件）
 ├── dist/                              # whl 不入库, 从 GitHub Release 下载放到此
 │   └── flash_attn-2.8.3+das.opt1.dtk2604-cp310-cp310-linux_x86_64.whl  # 安装产物
@@ -67,7 +68,7 @@ bash models/gemma4/start_flash.sh
 
 ## 源码位置
 
-本阶段改两层：
+本阶段改三层：
 
 1. **flash-attention-cutlass 源码**（与 vllm 同级目录，不在本目录）—— 新增 fp8_e5m2
    mixed kernel + head_dim=512 prefill 符号，编译成 whl。改动见 `flash_fp8e5m2_512.md`，
@@ -83,6 +84,14 @@ bash models/gemma4/start_flash.sh
    - `vllm/v1/attention/ops/triton_reshape_and_cache_flash.py` — 写侧按字符串选 e5m2 dtype
 
    对应 patch 文件 `flash_fp8e5m2.patch`。不打这层，新容器启动会直接报上面的 ValueError。
+
+3. **aiter 源码**（1 个文件，`patch.sh install` 自动打）—— 让 aiter 把 decode/prefill attention
+   路由到 flash `varlen_fwd_unified`，并在 fp8 KV 时把 Q cast 成 KV dtype 传 unit descale：
+   - `aiter/ops/triton/unified_attention.py` — flash 路由条件扩展（`ATTN_FLASH_PREFILL`/
+     `ATTN_FLASH_HEAD512`/MTP q_len≤8）+ fp8 KV 时 `_q_flash = q.to(k.dtype)` + unit descale
+
+   对应 patch 文件 `flash_aiter_fp8e5m2.patch`。不打这层，新容器主模型 attention 走 flash
+   prefix decode 时会报 `RuntimeError: For prefix decode, query and key must have the same dtype`。
 
 ## 编译说明
 

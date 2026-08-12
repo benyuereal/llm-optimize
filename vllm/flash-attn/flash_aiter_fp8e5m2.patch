@@ -1,0 +1,160 @@
+--- aiter/ops/triton/unified_attention.py
++++ aiter/ops/triton/unified_attention.py
+@@ -27,6 +27,18 @@
+     return getattr(torch.version, "hip", None) is not None
+ 
+ 
++@functools.lru_cache
++def _get_unit_descale(device: torch.device) -> torch.Tensor:
++    """A unit (1.0) descale tensor cached per device.
++
++    flash varlen_fwd_unified fp8 decode requires q/k/v descale tensors to be
++    passed even when no scaling is needed; a unit descale makes the fp8 path
++    a pure bit-cast (numerically a no-op). Cached per device so it is safe to
++    reuse during CUDA graph capture.
++    """
++    return torch.tensor([1.0], device=device)
++
++
+ def _default_fp8_dtype() -> torch.dtype:
+     if _is_rocm() and hasattr(torch, "float8_e4m3fnuz"):
+         return torch.float8_e4m3fnuz
+@@ -1064,7 +1076,11 @@
+     use_alibi_sqrt=False,  # bool
+ ):
+     assert causal, "Only causal attention is supported"
+-    assert q_descale is None, "Q scales not supported"
++    # Q scales are only meaningful for the non-fp8 triton path. For fp8 KV
++    # decode via varlen_fwd_unified we pass a unit descale ourselves below.
++    _kv_is_fp8_entry = k.dtype.is_floating_point and k.element_size() == 1
++    if not _kv_is_fp8_entry:
++        assert q_descale is None, "Q scales not supported"
+ 
+     if sinks is not None:
+         assert sinks.shape[0] == q.shape[1], "Sinks must be num_query_heads size"
+@@ -1134,11 +1150,42 @@
+         or max_seqlen_q > 1
+         or num_seqs > seq_threshold_3D
+     ):
++        # Route DECODE to varlen_fwd_unified (flash).
++        # Prefill (large max_seqlen_q) via varlen_fwd_unified OORs shared memory
++        # (Required 66560 > 65536) on gfx936 with bf16 KV + head_dim=256, and
++        # the fp8 e5m2 prefill mixed kernel is numerically broken (cos 0.09).
++        # Prefill falls back to the triton 2d kernel below.
++        #
++        # MTP speculative decoding issues 1 + num_speculative_tokens query tokens
++        # per decode step (e.g. 4 for num_speculative_tokens=3). The flash e5m2
++        # mixed kernel is numerically correct for these small q_len (verified
++        # cos 0.9987 at q_len=4), and fp8 KV (1 byte) needs half the shared
++        # memory of bf16 so OOR is not a concern. Allow small q_len (<=8) on
++        # fp8 KV to route to flash so MTP decode benefits from the 4.7x e5m2
++        # speedup. bf16 KV keeps the conservative <=1 limit.
++        _kv_is_fp8_type = k.dtype.is_floating_point and k.element_size() == 1
++        _flash_q_len_limit = 8 if _kv_is_fp8_type else 1
++        # A/B 对照开关: ATTN_FORCE_TRITON2D=1 强制全走 triton2d (关 flash)
++        if os.environ.get("ATTN_FORCE_TRITON2D", "0") == "1":
++            _flash_q_len_limit = 0
++        # gemma4 prefill 也走 flash: fp8 KV (1 byte) 无 shared-memory OOR 风险
++        # (bf16 KV + head_dim=256 才会 OOR 66560>65536). hg_prefix_prefill_varlen_fwd
++        # 精度验证 cos=0.9986 (vs triton bf16 golden), 性能 2.6-3.3x faster.
++        # 设 ATTN_FLASH_PREFILL=0 可回退到仅 decode 走 flash 的旧行为.
++        if _kv_is_fp8_type and os.environ.get("ATTN_FLASH_PREFILL", "1") == "1":
++            _flash_q_len_limit = 999999
++        # flash 支持 head_dim<=512. gemma4 MTP draft 模型 head_size=512, aiter 2D
++        # 无 tuned config (14.7ms/call, 占 61% GPU). 放开 head_size 限制让 draft 也走 flash.
++        # ATTN_FLASH_HEAD512=0 可回退 (只允许 head_size=256 走 flash).
++        _flash_head_ok = (head_size == 256)
++        if os.environ.get("ATTN_FLASH_HEAD512", "1") == "1" and _kv_is_fp8_type:
++            _flash_head_ok = head_size in (256, 512)
+         use_fa_unified_2d = (
+             _IS_ROCM
+             and varlen_fwd_unified is not None
+             and block_size % 64 == 0
+-            and head_size == 256
++            and _flash_head_ok
++            and max_seqlen_q <= _flash_q_len_limit
+         )
+         if not use_fa_unified_2d:
+             config = _get_unified_attention_2d_config(
+@@ -1216,27 +1263,60 @@
+                 **launch_config_2d,
+             )
+         else:
+-            varlen_fwd_unified(
+-                q=q,
+-                k=k,
+-                v=v,
+-                cu_seqlens_q=cu_seqlens_q,
+-                seqused_k=seqused_k,
+-                block_table=block_table,
+-                max_seqlen_q=max_seqlen_q,
+-                max_seqlen_k=max_seqlen_k,
+-                softmax_scale=softmax_scale,
+-                causal=causal,
+-                softcap=softcap,
+-                window_size=window_size,
+-                alibi_slopes=alibi_slopes,
+-                use_alibi_sqrt=use_alibi_sqrt,
+-                qq_bias=qq_bias,
+-                s_aux=sinks,
+-                mm_prefix_range=mm_prefix_range,
+-                return_softmax_lse=False,
+-                out=out,
+-            )
++            # fp8 KV decode path: flash requires Q and KV to share dtype and
++            # demands q/k/v descale tensors. Cast Q to the KV dtype and pass
++            # a unit descale (pure bit-cast, numerically a no-op). e5m2 is
++            # 4.7x faster than e4m3 here on gfx936/head_dim=256.
++            _kv_is_fp8 = k.dtype.is_floating_point and k.element_size() == 1
++            if _kv_is_fp8:
++                _q_flash = q.to(k.dtype)
++                _unit_descale = _get_unit_descale(q.device)
++                varlen_fwd_unified(
++                    q=_q_flash,
++                    k=k,
++                    v=v,
++                    cu_seqlens_q=cu_seqlens_q,
++                    seqused_k=seqused_k,
++                    block_table=block_table,
++                    max_seqlen_q=max_seqlen_q,
++                    max_seqlen_k=max_seqlen_k,
++                    softmax_scale=softmax_scale,
++                    causal=causal,
++                    softcap=softcap,
++                    window_size=window_size,
++                    alibi_slopes=alibi_slopes,
++                    use_alibi_sqrt=use_alibi_sqrt,
++                    qq_bias=qq_bias,
++                    s_aux=sinks,
++                    mm_prefix_range=mm_prefix_range,
++                    return_softmax_lse=False,
++                    out=out,
++                    q_descale=_unit_descale,
++                    k_descale=_unit_descale,
++                    v_descale=_unit_descale,
++                )
++            else:
++                varlen_fwd_unified(
++                    q=q,
++                    k=k,
++                    v=v,
++                    cu_seqlens_q=cu_seqlens_q,
++                    seqused_k=seqused_k,
++                    block_table=block_table,
++                    max_seqlen_q=max_seqlen_q,
++                    max_seqlen_k=max_seqlen_k,
++                    softmax_scale=softmax_scale,
++                    causal=causal,
++                    softcap=softcap,
++                    window_size=window_size,
++                    alibi_slopes=alibi_slopes,
++                    use_alibi_sqrt=use_alibi_sqrt,
++                    qq_bias=qq_bias,
++                    s_aux=sinks,
++                    mm_prefix_range=mm_prefix_range,
++                    return_softmax_lse=False,
++                    out=out,
++                )
+     else:
+         config_3d = _get_unified_attention_3d_config(
+             cache_block_size=block_size,

@@ -51,14 +51,14 @@ gh release download <release-tag> \
 cp /path/to/flash_attn-*.whl vllm/flash-attn/dist/
 
 # 2.2 安装 (脚本会: 卸载旧 flash_attn → pip 装新 whl → 验证 import + 512 prefill 符号
-#              → 打 vllm 侧 fp8_e5m2 patch, 改 3 个 vllm 源码文件)
+#              → 打 vllm 侧 fp8_e5m2 patch (3 文件) → 打 aiter 侧 fp8_e5m2 patch (1 文件))
 cd vllm/flash-attn
 bash patch.sh install
-bash patch.sh status        # 确认: whl "版本: 2.8.3+das.opt1..." + "fp8_e5m2 patch 已打"
+bash patch.sh status        # 确认: whl "版本: 2.8.3+das.opt1..." + vllm/aiter "fp8_e5m2 patch 已打"
 cd ../..                    # 回到 llm-optimize 根
 ```
 
-> `patch.sh install` 做两件事:
+> `patch.sh install` 做三件事:
 > ```bash
 > # 1. 替换 flash_attn python 包 (whl, 200M)
 > pip3 uninstall -y flash_attn
@@ -66,6 +66,9 @@ cd ../..                    # 回到 llm-optimize 根
 >
 > # 2. 打 vllm 侧 fp8_e5m2 patch (patch -p0, 改 3 个 vllm 源码文件)
 > cd /usr/local/lib/python3.10/dist-packages && patch -p0 < vllm/flash-attn/flash_fp8e5m2.patch
+>
+> # 3. 打 aiter 侧 fp8_e5m2 patch (patch -p0, 改 1 个 aiter 源码文件)
+> cd /usr/local/lib/python3.10/dist-packages && patch -p0 < vllm/flash-attn/flash_aiter_fp8e5m2.patch
 > ```
 > 若 whl 不在 `dist/`,可指定路径:`WHL=/path/to/flash_attn-*.whl bash patch.sh install`
 
@@ -76,6 +79,14 @@ cd ../..                    # 回到 llm-optimize 根
 > 但我们的 AWQ-4bit 模型 checkpoint 里并没有 fp8 KV scale (`kv_cache_scheme=None`),
 > 只是运行时想把 KV cache 存成 e5m2。所以需要改 3 个文件放行 e5m2 并让读/写路径走 triton
 > (C++ `reshape_and_cache_flash` op 不支持 e5m2)。不打这个 vllm patch,新容器启动会直接报上面的错。
+
+> **为什么必须改 aiter 源码?** aiter 的 `unified_attention.py` 把 decode/prefill attention 路由到
+> flash `varlen_fwd_unified`,但原版在 fp8 KV 时直接把 fp16 的 Q 和 e5m2 的 K 传给 flash,
+> flash 的 prefix decode kernel 要求 Q/K 同 dtype,会报
+> `RuntimeError: For prefix decode, query and key must have the same dtype`。
+> 改动:fp8 KV 时把 Q cast 成 KV dtype 再传,并附 unit descale (纯 bit-cast,数值无影响);
+> 同时扩展 flash 路由条件 (MTP q_len≤8 / prefill / head_dim=512)。不打这个 aiter patch,
+> 新容器 CUDA graph 捕获阶段就会崩溃。
 
 ### 3. 启动服务(两阶段叠加)
 
