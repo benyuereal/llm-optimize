@@ -43,9 +43,6 @@ vllm/flash-attn/
 ├── flash_fp8e5m2_512.md               # flash 源码改动详细说明（两层改动, 19 文件）
 ├── dist/                              # whl 不入库, 从 GitHub Release 下载放到此
 │   └── flash_attn-2.8.3+das.opt1.dtk2604-cp310-cp310-linux_x86_64.whl  # 安装产物
-├── new_files/                         # patch 中新增的两个 target 文件
-│   ├── flash_fp8_fwd_hdim512_prefix_prefill_fp16.cpp
-│   └── flash_fp8_fwd_hdim512_prefix_prefill_bf16.cpp
 └── models/gemma4/
     ├── DEPLOY.md                      # 部署指南（4 步傻瓜式）
     └── start_flash.sh        # 启动脚本（含环境变量）
