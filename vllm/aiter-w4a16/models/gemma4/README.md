@@ -67,7 +67,7 @@ config 文件格式:`{M_int: {BLOCK_SIZE_M/N/K, SPLITK, num_warps, NUM_CUS, D_SH
 ## 安装
 
 ```bash
-cd gemm/w4a16
+cd aiter-w4a16
 ./patch.sh install gemma4    # 装 patch + gemma4 的 config
 ./patch.sh status gemma4     # 查看 gemma4 config 是否就位
 ```

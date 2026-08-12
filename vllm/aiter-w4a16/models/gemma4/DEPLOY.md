@@ -26,7 +26,7 @@
 
 ```bash
 git clone git@github.com:benyuereal/llm-optimize.git
-cd llm-optimize/vllm/gemm/w4a16
+cd llm-optimize/vllm/aiter-w4a16
 ```
 
 ---

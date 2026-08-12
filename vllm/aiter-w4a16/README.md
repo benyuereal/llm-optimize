@@ -26,7 +26,7 @@ Hygon DCU BW10 (gfx936) 上,用 **aiter triton w4a16 kernel** 替换 vllm 自带
 ## 目录结构
 
 ```
-gemm/w4a16/
+aiter-w4a16/
 ├── README.md                         # 本文件 (通用说明)
 ├── patch.sh                          # 一键 install / revert / status / models
 ├── aiter.patch                       # 源码 patch (3 段合一: vllm triton_w4a16 + aiter kernel + configs)
@@ -35,9 +35,6 @@ gemm/w4a16/
 │   ├── verify_aiter_self.py          # aiter 自洽性验证
 │   ├── verify_symmetric_zp.py        # 对称量化 zp 兼容验证
 │   ├── bench_aiter_vs_vllm.py        # aiter vs vllm kernel 级性能对比
-│   ├── bench_bf16_kernel.py          # bf16 vs fp16 kernel 精度+性能对比
-│   ├── isolate_bf16_slow.py          # 定位 bf16 慢的根因 (隔离实验)
-│   ├── isolate_scales_dtype.py       # scales dtype 对性能影响
 │   ├── tune_aiter_config.py          # config 参数扫描
 │   ├── gen_aiter_configs.py          # 生成 config json
 │   └── test_custom_op.py             # custom_op + torch.compile 兼容性测试
@@ -57,7 +54,7 @@ gemm/w4a16/
 ## 一键安装 / 回退
 
 ```bash
-cd gemm/w4a16
+cd aiter-w4a16
 
 ./patch.sh install [model]   # 安装 patch (默认 model=gemma4)
 ./patch.sh revert            # 回退到 vllm 原始 triton_w4a16.py

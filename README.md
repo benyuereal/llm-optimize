@@ -32,7 +32,7 @@ llm-optimize/
 │   ├── dist/            # 编译产物 whl (git-lfs)
 │   └── scripts/         # 启动脚本
 └── vllm/
-    ├── gemm/w4a16/      # 第一阶段: aiter w4a16 GEMM 加速 (Hygon DCU)
+    ├── aiter-w4a16/     # 第一阶段: aiter w4a16 GEMM 加速 (Hygon DCU)
     │   ├── README.md    # 通用 patch 机制说明
     │   ├── patch.sh     # 一键安装 / 回退
     │   └── models/gemma4/   # gemma-4-31B-it-AWQ-4bit 调优 + 部署方案
@@ -50,9 +50,9 @@ llm-optimize/
 另一项优化:在 Hygon DCU BW10 (gfx936) 上,用 aiter triton w4a16 kernel 替换 vllm 自带 kernel,
 加速 gemma-4-31B-it-AWQ-4bit 推理,精度无损,端到端 TPOT -25%、吞吐 +31%。
 
-部署人员请直接看 [`vllm/gemm/w4a16/models/gemma4/DEPLOY.md`](vllm/gemm/w4a16/models/gemma4/DEPLOY.md)
+部署人员请直接看 [`vllm/aiter-w4a16/models/gemma4/DEPLOY.md`](vllm/aiter-w4a16/models/gemma4/DEPLOY.md)
 (下载 → 一键安装 → 性能验证 → 精度验证,四步完成)。
-通用机制说明见 [`vllm/gemm/w4a16/README.md`](vllm/gemm/w4a16/README.md)。
+通用机制说明见 [`vllm/aiter-w4a16/README.md`](vllm/aiter-w4a16/README.md)。
 
 ## vLLM flash attention 加速 (Hygon DCU, 第二阶段)
 
