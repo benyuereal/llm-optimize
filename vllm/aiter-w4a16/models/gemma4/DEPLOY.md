@@ -5,6 +5,150 @@
 
 本方案面向部署人员,按下面 4 步操作即可,无需理解内部实现。
 
+> **新容器从零部署?** 直接看下面的 [§新容器完整部署(阶段一+阶段二)](#新容器完整部署阶段一阶段二),
+> 一节走完两个阶段。本节后续是阶段一的单阶段细节。
+
+---
+
+## 新容器完整部署(阶段一+阶段二)
+
+新镜像容器里从零部署 gemma-4-31B-it-AWQ-4bit,两个阶段叠加(aiter w4a16 GEMM + flash attn fp8 KV)。
+按顺序执行,每步都给可复制命令。**前提:容器里已装好 vllm + aiter DCU 定制版**(见 [§前置条件](#〇-前置条件))。
+
+### 0. 拉取本仓库
+
+```bash
+git clone git@github.com:benyuereal/llm-optimize.git
+cd llm-optimize
+```
+
+### 1. 阶段一 · 安装 aiter w4a16 patch
+
+```bash
+cd vllm/aiter-w4a16
+./patch.sh install          # 打 aiter.patch (vllm triton_w4a16 + aiter kernel + 10 个 config)
+./patch.sh status           # 确认: "aiter patch 已打" + "gemma4 config : 10 / 10 个已放置"
+cd ../..                    # 回到 llm-optimize 根
+```
+
+### 2. 阶段二 · 安装 flash attn whl
+
+whl 体积大(200M)不入仓库,从 GitHub Release 附件下载后放到 `vllm/flash-attn/dist/`:
+
+```bash
+# 2.1 下载 whl (到本仓库 GitHub Release 页面下载)
+#     flash_attn-2.8.3+das.opt1.dtk2604-cp310-cp310-linux_x86_64.whl
+#     放到 vllm/flash-attn/dist/ 下
+
+# 2.2 安装
+cd vllm/flash-attn
+bash patch.sh install       # 卸载旧 flash_attn → 装 dist/ 下 whl → 验证 import + 512 prefill 符号
+bash patch.sh status        # 确认: "flash_attn version: 2.8.3+das.opt1..."
+cd ../..                    # 回到 llm-optimize 根
+```
+
+> 也可不放进 dist,直接指定 whl 路径:`WHL=/path/to/flash_attn-*.whl bash patch.sh install`
+
+### 3. 启动服务(两阶段叠加)
+
+用阶段二提供的启动脚本(它已同时启用两阶段):
+
+```bash
+cd vllm/flash-attn/models/gemma4
+bash start_tp4_flash_e5m2.sh
+```
+
+该脚本相比阶段一的 `start.sh` 关键差异(两个阶段叠加所需):
+
+| 参数 | 阶段一 (start.sh) | 阶段二 (start_tp4_flash_e5m2.sh) |
+|------|-------------------|----------------------------------|
+| `--attention-backend` | TRITON_ATTN | **ROCM_AITER_UNIFIED_ATTN** |
+| `--kv-cache-dtype` | fp8 | **fp8_e5m2** |
+| `--dtype` | (未显式) | **float16** |
+| `HIP_VISIBLE_DEVICES` | 0,1,2,3 | **0,4,2,3** |
+| 环境变量 | VLLM_AITER_W4A16_PATCH=1 | +ATTN_FLASH_PREFILL=1 +ATTN_FLASH_HEAD512=1 |
+
+> 脚本里 `MODEL_DIR` 和 `--speculative-config` 的模型路径默认 `/data/zq/models/...`,
+> 若你的模型路径不同,设环境变量 `MODEL_DIR=/your/path` 再启动,或直接改脚本。
+
+等到日志出现 `Application startup complete`、`Uvicorn running on ...` 表示就绪。
+启动成功应看到 draft 模型 head512 的 `full_attention` 走 flash kernel(不再是 aiter 2D)、
+CUDA graph capture 通过。
+
+### 4. 锁频检测(性能关键)
+
+DCU 默认动态调频,decode 阶段频率会掉,导致 TPOT 偏高 5~7ms。脚本启动时已自动锁频,
+但容器环境下可能静默失败,**务必检测一次**:
+
+```bash
+rocm-smi --showclocks 2>&1 | grep sclk
+```
+
+4 张卡都应显示 `sclk clock level: 6 (760Mhz)`。若没锁上,手动锁(不用重启 vllm):
+
+```bash
+for i in 0 4 2 3; do
+  rocm-smi -d $i --setperflevel manual
+  rocm-smi -d $i --setsclk 6
+done
+rocm-smi --showclocks 2>&1 | grep sclk
+```
+
+### 5. 性能验证
+
+另开终端,连跑两轮取第二轮稳态:
+
+```bash
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 vllm bench serve \
+  --backend vllm \
+  --base-url http://localhost:8001 \
+  --model gemma4 \
+  --tokenizer /data/zq/models/gemma-4-31B-it-AWQ-4bit/ \
+  --dataset-name random \
+  --random-input-len 5120 \
+  --random-output-len 1024 \
+  --num-prompts 4 \
+  --seed 42
+```
+
+两阶段叠加的参考性能(batch 4):
+
+| 阶段 | TPOT | 说明 |
+|------|------|------|
+| 仅阶段一 (aiter w4a16) | ~67.76ms | GEMM 加速, attention 仍走 triton |
+| 阶段一+二 (叠加 flash) | **~35.63ms** | draft full_attention 走 flash, 1.68~2.2x |
+
+> 阶段二主要加速 MTP draft 的 full_attention(head_dim=512),对长输入长输出 + MTP 场景收益最大。
+
+### 6. 精度验证
+
+```bash
+evalscope eval \
+  --model gemma4 \
+  --api-url http://127.0.0.1:8001/v1/chat/completions \
+  --api-key EMPTY \
+  --eval-type openai_api \
+  --datasets humaneval \
+  --eval-batch-size 16 \
+  --generation-config '{"temperature": 0.2, "top_p": 0.95, "repetition_penalty": 1.05, "max_tokens": 8192, "extra_body": {"chat_template_kwargs": {"thinking_mode": "disabled"}}}' \
+  --timeout 100000 \
+  --work-dir ./outputs/
+```
+
+两阶段叠加 HumanEval pass@1 = **97.56%**(164 题全量),与未优化前一致,精度无损。
+
+### 回退(两阶段都要回退)
+
+```bash
+# 先回退阶段二 (卸载 flash whl, 重装官方 flash-attn)
+cd vllm/flash-attn && bash patch.sh revert
+
+# 再回退阶段一 (恢复 vllm+aiter 原始文件)
+cd ../aiter-w4a16 && bash patch.sh revert
+```
+
+> 回退顺序:先 flash(阶段二)再 aiter(阶段一),与安装顺序相反。
+
 ---
 
 ## 〇. 前置条件
@@ -40,12 +184,11 @@ cd llm-optimize/vllm/aiter-w4a16
 > `install` 后面可跟模型名(如 `./patch.sh install gemma4`),指定用哪套调优 config。
 > 目前只有 gemma4 一个模型,也是默认值,所以可省略。
 
-这一条命令会自动完成:
-1. 备份 vllm 原始文件(用于回退)
-2. 替换 vllm 的 `triton_w4a16.py` 为 aiter patch 版
-3. 覆盖 aiter 的 w4a16 kernel(改成 triton 3.5 兼容版)
-4. 放置 gemma4 的调优 config(10 个 json)
-5. 清空编译缓存
+这一条命令会用 `patch -p0` 把 `aiter.patch` 打到 dist-packages,自动完成:
+1. patch vllm 的 `triton_w4a16.py`(GPTQ→AWQ 重排 / 对称 zp 兼容 / 原始 qweight 释放 / custom_op 接入)
+2. patch aiter 的 w4a16 kernel(改成 triton 3.5 兼容版)
+3. 新增 gemma4 的调优 config(10 个 json)
+4. 清空 torch.compile 缓存
 
 装好后查看状态确认:
 
@@ -53,7 +196,7 @@ cd llm-optimize/vllm/aiter-w4a16
 ./patch.sh status
 ```
 
-看到 `vllm triton_w4a16.py : aiter patch 版` 和 `gemma4 config : 10 / 10 个已放置` 即成功。
+看到 `vllm triton_w4a16.py : aiter patch 已打` 和 `gemma4 config : 10 / 10 个已放置` 即成功。
 
 > **默认启用**:装完 patch 后,直接用你原来的 `vllm serve` 命令启动即可,aiter kernel 自动生效,
 > 无需设置任何环境变量。
@@ -61,6 +204,12 @@ cd llm-optimize/vllm/aiter-w4a16
 ---
 
 ## 三. 启动 vllm 并做性能验证
+
+> **只部署阶段一?** 若只要 aiter w4a16 不叠加 flash,可用阶段二的启动脚本
+> `vllm/flash-attn/models/gemma4/start_tp4_flash_e5m2.sh` 作参考,把
+> `--attention-backend` 改回 `TRITON_ATTN`、`--kv-cache-dtype` 改回 `fp8`、
+> 去掉 `--dtype float16` 和 `ATTN_FLASH_*` 环境变量即可。下面的 `start.sh`
+> 是阶段一的基准启动脚本(本地产物,未入仓库),内容供参考。
 
 ### 1. 启动 vllm
 
