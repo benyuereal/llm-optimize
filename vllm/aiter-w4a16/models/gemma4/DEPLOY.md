@@ -33,21 +33,38 @@ cd ../..                    # 回到 llm-optimize 根
 
 ### 2. 阶段二 · 安装 flash attn whl
 
-whl 体积大(200M)不入仓库,从 GitHub Release 附件下载后放到 `vllm/flash-attn/dist/`:
+whl 体积大(200M,超 GitHub 单文件 100M 限制)不入仓库,放在 GitHub Release 附件。
+
+**whl 文件名**:`flash_attn-2.8.3+das.opt1.dtk2604-cp310-cp310-linux_x86_64.whl`
 
 ```bash
-# 2.1 下载 whl (到本仓库 GitHub Release 页面下载)
-#     flash_attn-2.8.3+das.opt1.dtk2604-cp310-cp310-linux_x86_64.whl
-#     放到 vllm/flash-attn/dist/ 下
+# 2.1 下载 whl 放到 vllm/flash-attn/dist/ (三选一)
 
-# 2.2 安装
+#   方式 A: 浏览器到本仓库 GitHub Release 页面下载, 手动放到 dist/
+#   方式 B: gh CLI
+gh release download <release-tag> \
+    -R benyuereal/llm-optimize \
+    -p "flash_attn-2.8.3+das.opt1.dtk2604-cp310-cp310-linux_x86_64.whl" \
+    -D vllm/flash-attn/dist/
+
+#   方式 C: 若 whl 已在别处, 直接拷贝/指定路径
+cp /path/to/flash_attn-*.whl vllm/flash-attn/dist/
+
+# 2.2 安装 (脚本会: 卸载旧 flash_attn → pip 装新 whl → 验证 import + 512 prefill 符号)
 cd vllm/flash-attn
-bash patch.sh install       # 卸载旧 flash_attn → 装 dist/ 下 whl → 验证 import + 512 prefill 符号
-bash patch.sh status        # 确认: "flash_attn version: 2.8.3+das.opt1..."
+bash patch.sh install
+bash patch.sh status        # 确认: "版本: 2.8.3+das.opt1..."
 cd ../..                    # 回到 llm-optimize 根
 ```
 
-> 也可不放进 dist,直接指定 whl 路径:`WHL=/path/to/flash_attn-*.whl bash patch.sh install`
+> `patch.sh install` 内部等价于:
+> ```bash
+> pip3 uninstall -y flash_attn
+> pip3 install --force-reinstall --no-deps vllm/flash-attn/dist/flash_attn-2.8.3+das.opt1.dtk2604-cp310-cp310-linux_x86_64.whl
+> ```
+> 若 whl 不在 `dist/`,可指定路径:`WHL=/path/to/flash_attn-*.whl bash patch.sh install`
+
+> `--no-deps` 很关键:避免 pip 顺带升级依赖(如 torch)破坏 DCU 环境。
 
 ### 3. 启动服务(两阶段叠加)
 
