@@ -92,4 +92,4 @@ gemma-4 MTP draft 模型有 `full_attention` 层，global_head_dim=512，num_glo
 原来走 aiter 的 2D attention kernel（head_dim=512 时很慢）。本优化扩展 flash-attention-cutlass
 的 fp8 mixed kernel，使其支持 head_dim=512 的 prefix decode + prefix prefill，draft 侧改走 flash。
 
-详细改动见上级目录 `flash_fp8_hdim512_patch.md`。
+详细改动见上级目录 `flash_fp8e5m2_512.md`。

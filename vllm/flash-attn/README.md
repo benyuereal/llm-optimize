@@ -38,8 +38,8 @@ vllm/flash-attn/
 ├── README.md                          # 本文件
 ├── patch.sh                           # 一键安装/回退/状态 (装 whl + 打 vllm 侧 patch)
 ├── flash_fp8e5m2_512.patch            # flash-attention-cutlass 源码改动 patch (编译 whl 用, 已含在 dist/whl 里)
-├── flash_vllm_fp8e5m2.patch           # vllm 侧 fp8_e5m2 patch (改 3 个 vllm 文件, install 时自动打)
-├── flash_fp8_hdim512_patch.md         # flash 源码改动详细说明（两层改动, 19 文件）
+├── flash_fp8e5m2.patch                # vllm 侧 fp8_e5m2 patch (改 3 个 vllm 文件, install 时自动打)
+├── flash_fp8e5m2_512.md               # flash 源码改动详细说明（两层改动, 19 文件）
 ├── dist/                              # whl 不入库, 从 GitHub Release 下载放到此
 │   └── flash_attn-2.8.3+das.opt1.dtk2604-cp310-cp310-linux_x86_64.whl  # 安装产物
 ├── new_files/                         # patch 中新增的两个 target 文件
@@ -70,7 +70,7 @@ bash models/gemma4/start_flash.sh
 本阶段改两层：
 
 1. **flash-attention-cutlass 源码**（与 vllm 同级目录，不在本目录）—— 新增 fp8_e5m2
-   mixed kernel + head_dim=512 prefill 符号，编译成 whl。改动见 `flash_fp8_hdim512_patch.md`，
+   mixed kernel + head_dim=512 prefill 符号，编译成 whl。改动见 `flash_fp8e5m2_512.md`，
    对应 patch 文件 `flash_fp8e5m2_512.patch`。**已包含在 `dist/` 的 whl 里**，用户无需再编译，
    只需从 GitHub Release 下载 whl 即可。
 
@@ -82,7 +82,7 @@ bash models/gemma4/start_flash.sh
      （C++ `reshape_and_cache_flash` op 不支持 e5m2）
    - `vllm/v1/attention/ops/triton_reshape_and_cache_flash.py` — 写侧按字符串选 e5m2 dtype
 
-   对应 patch 文件 `flash_vllm_fp8e5m2.patch`。不打这层，新容器启动会直接报上面的 ValueError。
+   对应 patch 文件 `flash_fp8e5m2.patch`。不打这层，新容器启动会直接报上面的 ValueError。
 
 ## 编译说明
 

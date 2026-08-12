@@ -30,7 +30,7 @@ WHL_DIR="$SCRIPT_DIR/dist"
 DIST_DIR=/usr/local/lib/python3.10/dist-packages
 
 # vllm 侧 patch (3 个文件: attention.py + rocm_aiter_unified_attn.py + triton_reshape_and_cache_flash.py)
-VLLM_PATCH="$SCRIPT_DIR/flash_vllm_fp8e5m2.patch"
+VLLM_PATCH="$SCRIPT_DIR/flash_fp8e5m2.patch"
 
 # vllm 侧被改的 3 个文件 (用于 status 检测)
 VLLM_ATTN="$DIST_DIR/vllm/model_executor/layers/attention/attention.py"

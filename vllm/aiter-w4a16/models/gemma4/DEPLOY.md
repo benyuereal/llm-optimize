@@ -65,7 +65,7 @@ cd ../..                    # 回到 llm-optimize 根
 > pip3 install --force-reinstall --no-deps vllm/flash-attn/dist/flash_attn-2.8.3+das.opt1.dtk2604-cp310-cp310-linux_x86_64.whl
 >
 > # 2. 打 vllm 侧 fp8_e5m2 patch (patch -p0, 改 3 个 vllm 源码文件)
-> cd /usr/local/lib/python3.10/dist-packages && patch -p0 < vllm/flash-attn/flash_vllm_fp8e5m2.patch
+> cd /usr/local/lib/python3.10/dist-packages && patch -p0 < vllm/flash-attn/flash_fp8e5m2.patch
 > ```
 > 若 whl 不在 `dist/`,可指定路径:`WHL=/path/to/flash_attn-*.whl bash patch.sh install`
 

@@ -61,7 +61,7 @@ flash-attention-cutlass/
 │   └── flash_attn-2.8.3+das.opt1.dtk2604-cp310-cp310-linux_x86_64.whl
 ├── patch/
 │   ├── flash_fp8e5m2_512.patch            # 源码 patch (git apply)
-│   ├── flash_fp8_hdim512_patch.md         # 改动清单详细说明
+│   ├── flash_fp8e5m2_512.md               # 改动清单详细说明
 │   └── new_files/                         # patch 中新建的 2 个文件（便于审查）
 │       ├── flash_fp8_fwd_hdim512_prefix_prefill_fp16.cpp
 │       └── flash_fp8_fwd_hdim512_prefix_prefill_bf16.cpp
@@ -92,7 +92,7 @@ patch 共 19 个文件（17 改 + 2 新建），分两层：
 1. **fp8 e4m3 mixed kernel 支持**：让 gfx936 的 fp8 mixed kernel 同时支持 e5m2 和 e4m3 KV 存储（e4m3 走软件 `__e4m32float` dequant，复用 e5m2 的 compact-LDS pipeline）
 2. **head_dim=512 支持**：解除 flash 入口的 TORCH_CHECK 限制，让 fp8 + 512 在 decode/prefill 双路径走 flash mixed kernel
 
-详细改动见 `patch/flash_fp8_hdim512_patch.md`。
+详细改动见 `patch/flash_fp8e5m2_512.md`。
 
 ## 环境要求
 
