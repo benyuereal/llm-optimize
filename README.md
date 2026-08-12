@@ -40,7 +40,7 @@ llm-optimize/
     └── flash-attn/      # 第二阶段: flash fp8 KV + head_dim=512 加速 (部署视角)
         ├── README.md    # 通用说明
         ├── patch.sh     # 一键安装 / 回退
-        ├── flash_fp8e5m2_512.patch   # 源码改动 patch
+        ├── flash-attn.patch   # flash 源码改动 patch (编译 whl 用)
         └── models/gemma4/
             └── DEPLOY.md    # ← 部署方案 (面向部署人员, 傻瓜式)
 ```

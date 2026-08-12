@@ -60,7 +60,7 @@ flash-attention-cutlass/
 ├── dist/                                  # 编译产物 (whl 不入库, 从 GitHub Release 下载放到此)
 │   └── flash_attn-2.8.3+das.opt1.dtk2604-cp310-cp310-linux_x86_64.whl
 ├── patch/
-│   ├── flash_fp8e5m2_512.patch            # 源码 patch (git apply)
+│   ├── flash-attn.patch                   # 源码 patch (git apply)
 │   ├── flash_fp8e5m2_512.md               # 改动清单详细说明
 │   └── new_files/                         # patch 中新建的 2 个文件（便于审查）
 │       ├── flash_fp8_fwd_hdim512_prefix_prefill_fp16.cpp
@@ -74,7 +74,7 @@ flash-attention-cutlass/
 ```bash
 # 1. 拿到 flash-attention-cutlass 源码 (分支 path2-e4m3-qfp16, commit 6519c7f)
 cd flash-attention-cutlass
-git apply /path/to/patch/flash_fp8e5m2_512.patch
+git apply /path/to/patch/flash-attn.patch
 
 # 2. 编译
 export FLASH_ATTN_OPT=1

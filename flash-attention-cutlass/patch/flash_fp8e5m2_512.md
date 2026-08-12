@@ -1,10 +1,10 @@
 # flash-attention-cutlass 完整改动清单 (fp8 e5m2+e4m3 KV + head_dim=512, gfx936)
 
 ## 生成物
-- **统一 patch 文件**: `flash_fp8e5m2_512.patch` (74K, 1243行)
+- **统一 patch 文件**: `flash-attn.patch` (74K, 1243行)
 - **验证**: 在干净 HEAD (commit 6519c7f) 上 `git apply --check` 通过, 无冲突
 - **分支**: path2-e4m3-qfp16
-- **应用**: `cd flash-attention-cutlass && git apply flash_fp8e5m2_512.patch`
+- **应用**: `cd flash-attention-cutlass && git apply flash-attn.patch`
 
 ## 改动分两层
 1. **Layer A (之前session)**: 让 gfx936 fp8 mixed kernel 同时支持 e5m2 和 e4m3 KV 存储

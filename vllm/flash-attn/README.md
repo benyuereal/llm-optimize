@@ -37,7 +37,7 @@ gemma-4-31B-it-AWQ 的 MTP draft 模型有一个 `full_attention` 层：
 vllm/flash-attn/
 ├── README.md                          # 本文件
 ├── patch.sh                           # 一键安装/回退/状态 (装 whl + 打 vllm 侧 patch)
-├── flash_fp8e5m2_512.patch            # flash-attention-cutlass 源码改动 patch (编译 whl 用, 已含在 dist/whl 里)
+├── flash-attn.patch                   # flash-attention-cutlass 源码改动 patch (编译 whl 用, 已含在 dist/whl 里)
 ├── flash_fp8e5m2.patch                # vllm 侧 fp8_e5m2 patch (改 3 个 vllm 文件, install 时自动打)
 ├── flash_fp8e5m2_512.md               # flash 源码改动详细说明（两层改动, 19 文件）
 ├── dist/                              # whl 不入库, 从 GitHub Release 下载放到此
@@ -71,7 +71,7 @@ bash models/gemma4/start_flash.sh
 
 1. **flash-attention-cutlass 源码**（与 vllm 同级目录，不在本目录）—— 新增 fp8_e5m2
    mixed kernel + head_dim=512 prefill 符号，编译成 whl。改动见 `flash_fp8e5m2_512.md`，
-   对应 patch 文件 `flash_fp8e5m2_512.patch`。**已包含在 `dist/` 的 whl 里**，用户无需再编译，
+   对应 patch 文件 `flash-attn.patch`。**已包含在 `dist/` 的 whl 里**，用户无需再编译，
    只需从 GitHub Release 下载 whl 即可。
 
 2. **vllm 源码**（3 个文件，`patch.sh install` 自动打）—— 让 vllm 支持 `fp8_e5m2` KV cache：
