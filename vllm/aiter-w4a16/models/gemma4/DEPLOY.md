@@ -72,12 +72,12 @@ cd ../..                    # 回到 llm-optimize 根
 
 ```bash
 cd vllm/flash-attn/models/gemma4
-bash start_tp4_flash_e5m2.sh
+bash start_flash.sh
 ```
 
 该脚本相比阶段一的 `start.sh` 关键差异(两个阶段叠加所需):
 
-| 参数 | 阶段一 (start.sh) | 阶段二 (start_tp4_flash_e5m2.sh) |
+| 参数 | 阶段一 (start.sh) | 阶段二 (start_flash.sh) |
 |------|-------------------|----------------------------------|
 | `--attention-backend` | TRITON_ATTN | **ROCM_AITER_UNIFIED_ATTN** |
 | `--kv-cache-dtype` | fp8 | **fp8_e5m2** |
@@ -223,7 +223,7 @@ cd llm-optimize/vllm/aiter-w4a16
 ## 三. 启动 vllm 并做性能验证
 
 > **只部署阶段一?** 若只要 aiter w4a16 不叠加 flash,可用阶段二的启动脚本
-> `vllm/flash-attn/models/gemma4/start_tp4_flash_e5m2.sh` 作参考,把
+> `vllm/flash-attn/models/gemma4/start_flash.sh` 作参考,把
 > `--attention-backend` 改回 `TRITON_ATTN`、`--kv-cache-dtype` 改回 `fp8`、
 > 去掉 `--dtype float16` 和 `ATTN_FLASH_*` 环境变量即可。下面的 `start.sh`
 > 是阶段一的基准启动脚本(本地产物,未入仓库),内容供参考。

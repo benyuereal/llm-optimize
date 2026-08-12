@@ -125,7 +125,7 @@ python3 setup.py sdist bdist_wheel
 pip3 install --force-reinstall --no-deps dist/flash_attn-*.whl
 ```
 
-## 启动配置 (start_tp4_flash_e5m2.sh 关键项)
+## 启动配置 (start_flash.sh 关键项)
 ```bash
 export VLLM_AITER_W4A16_PATCH=1
 export ATTN_FLASH_PREFILL=1

@@ -40,7 +40,7 @@ python3 -c "import flash_attn; print(flash_attn.__version__)"
 
 ```bash
 # TP4, FLASH attn + fp8_e5m2 KV + MTP
-bash scripts/start_tp4_flash_e5m2.sh
+bash scripts/start_flash.sh
 ```
 
 关键环境变量（已写在脚本里）：
@@ -50,7 +50,7 @@ bash scripts/start_tp4_flash_e5m2.sh
 - `--kv-cache-dtype fp8_e5m2`
 - `--speculative-config '{"method":"mtp","model":"<draft模型路径>","num_speculative_tokens":3}'`
 
-> 注意：`start_tp4_flash_e5m2.sh` 里 `MODEL_DIR`、draft 模型路径、`HIP_VISIBLE_DEVICES` 需按实际环境调整。
+> 注意：`start_flash.sh` 里 `MODEL_DIR`、draft 模型路径、`HIP_VISIBLE_DEVICES` 需按实际环境调整。
 
 ## 目录结构
 
@@ -66,7 +66,7 @@ flash-attention-cutlass/
 │       ├── flash_fp8_fwd_hdim512_prefix_prefill_fp16.cpp
 │       └── flash_fp8_fwd_hdim512_prefix_prefill_bf16.cpp
 └── scripts/
-    └── start_tp4_flash_e5m2.sh            # 启动脚本
+    └── start_flash.sh            # 启动脚本
 ```
 
 ## 从源码重新编译（如需）

@@ -46,7 +46,7 @@ vllm/flash-attn/
 │   └── flash_fp8_fwd_hdim512_prefix_prefill_bf16.cpp
 └── models/gemma4/
     ├── DEPLOY.md                      # 部署指南（4 步傻瓜式）
-    └── start_tp4_flash_e5m2.sh        # 启动脚本（含环境变量）
+    └── start_flash.sh        # 启动脚本（含环境变量）
 ```
 
 ## 快速开始
@@ -59,7 +59,7 @@ vllm/flash-attn/
 bash patch.sh install
 
 # 2. 启动
-bash models/gemma4/start_tp4_flash_e5m2.sh
+bash models/gemma4/start_flash.sh
 
 # 3. 验证（见 models/gemma4/DEPLOY.md）
 ```

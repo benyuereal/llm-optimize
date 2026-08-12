@@ -41,7 +41,7 @@ bash patch.sh status
 ### 第 3 步 · 启动服务
 
 ```bash
-bash models/gemma4/start_tp4_flash_e5m2.sh
+bash models/gemma4/start_flash.sh
 ```
 
 该脚本设置关键环境变量，启动 vllm 服务（TP4, GPU 0,4,2,3），MTP draft 的 full_attention 自动走 flash mixed kernel。

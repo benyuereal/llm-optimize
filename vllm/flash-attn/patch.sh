@@ -11,7 +11,7 @@
 #   ./patch.sh status    # 查看当前 flash_attn 安装状态
 #
 # 注: 本 patch 是替换 flash_attn python 包 (pip whl), 不改 vllm 源码。
-#     vllm 侧只需启动时设置环境变量 (见 models/gemma4/start_tp4_flash_e5m2.sh)。
+#     vllm 侧只需启动时设置环境变量 (见 models/gemma4/start_flash.sh)。
 # ============================================================
 set -e
 
@@ -77,7 +77,7 @@ install)
     fi
     echo ""
     info "安装完成! 启动服务请用:"
-    echo "    bash $SCRIPT_DIR/models/gemma4/start_tp4_flash_e5m2.sh"
+    echo "    bash $SCRIPT_DIR/models/gemma4/start_flash.sh"
     echo ""
     info "回退: $0 revert"
     ;;

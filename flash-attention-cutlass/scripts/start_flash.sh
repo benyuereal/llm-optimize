@@ -11,12 +11,12 @@ export PATH=/opt/hyhal/bin:/opt/dtk/bin:$PATH
 export HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-0,4,2,3}
 export HF_HUB_OFFLINE=1
 
-echo "[start_tp4_flash_e5m2.sh] 锁定 DCU 高性能模式 (cards: $HIP_VISIBLE_DEVICES)..."
+echo "[start_flash.sh] 锁定 DCU 高性能模式 (cards: $HIP_VISIBLE_DEVICES)..."
 for i in ${HIP_VISIBLE_DEVICES//,/ }; do
   rocm-smi -d $i --setperflevel manual >/dev/null 2>&1 || true
   rocm-smi -d $i --setsclk 6 >/dev/null 2>&1 || true
 done
-echo "[start_tp4_flash_e5m2.sh] 锁频结果确认:"
+echo "[start_flash.sh] 锁频结果确认:"
 for i in ${HIP_VISIBLE_DEVICES//,/ }; do
   sclk=$(rocm-smi -d $i --showclocks 2>/dev/null | grep -oE "sclk clock level: [0-9]+ \([0-9]+Mhz\)" | head -1)
   echo "  HCU[$i]: ${sclk:-未获取到频率}"
@@ -28,8 +28,8 @@ export ATTN_FLASH_HEAD512=1  # draft模型head_size=512也走flash  # prefill也
 
 MODEL_DIR=${MODEL_DIR:-/data/zq/models/gemma-4-31B-it-AWQ-4bit/}
 
-echo "[start_tp4_flash_e5m2.sh] 启动 vllm serve (TP=4, FLASH + fp8_e5m2 KV)..."
-echo "[start_tp4_flash_e5m2.sh] 模型: $MODEL_DIR"
+echo "[start_flash.sh] 启动 vllm serve (TP=4, FLASH + fp8_e5m2 KV)..."
+echo "[start_flash.sh] 模型: $MODEL_DIR"
 vllm serve "$MODEL_DIR" \
     --host 0.0.0.0 \
     --port 8001 \
