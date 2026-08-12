@@ -207,6 +207,37 @@ if w_zp is None:
 - 对称模型(无 zp):`zp_bias = weight_type.bias`(=8),造全 8 zp ✅
 - 非对称模型(有 zp):`zp_bias = 0`,用真实 zp ✅
 
+### 2.1.1 原始 qweight 释放 (省 ~3.5GB/卡, 解 TP1 单卡 OOM)
+
+`process_weights_after_loading` 把权重 repack 成 aiter 格式 (`aq`/`az`) 后,原始
+`qweight [K, N//8] int32` + `qzeros`(~3.5GB/卡)就不再需要了 —— aiter 路径只读
+`_aiter_w4a16_cache`(aq/az/scales)。但 repack 后原始权重和 aiter 权重**两份同样大的数据并存**,
+TP1 单卡 32GB 装 31B 模型会 OOM,故 repack 完立即释放原始那份:
+
+```python
+# _aiter_preprocess_layer 末尾: aiter 路径只读 _aiter_w4a16_cache, 不再读 w_q/w_zp
+del w_q_data, b_q_awq, qzeros_awq
+replace_parameter(layer, w_q_name, None)        # 置空原始 qweight
+if w_zp_name is not None and ... is not None:
+    replace_parameter(layer, w_zp_name, None)   # 置空原始 qzeros
+torch.cuda.empty_cache()
+```
+
+实测(gemma4-31B-AWQ, TP1 单卡全部 60 层):
+
+| 张量 | 不释放 | 释放后 |
+|------|--------|--------|
+| 原始 qweight (int32) | 3.41 GB | 置空 |
+| 原始 qzeros (int32) | 0.11 GB | 置空 |
+| aiter aq (int8, repack后) | 3.41 GB | 3.41 GB(保留) |
+| aiter az (int8, repack后) | 0.11 GB | 0.11 GB(保留) |
+| scales (fp16) | 0.85 GB | 0.85 GB(保留) |
+| **量化权重合计** | **7.89 GB** | **4.37 GB** |
+| **净省** | | **3.52 GB/卡** |
+
+TP4 每卡只装 1/4 权重,本来不紧张,省的 ~0.88GB/卡 属锦上添花;**TP1 单卡**这 3.5GB 是
+OOM 与不 OOM 的区别(31B 权重 + KV cache + activation 易顶满 32GB)。
+
 ### 2.2 bf16 模型 + `--dtype float16` (兼容关键)
 
 aiter kernel 硬编码 fp16 输出。模型权重若是 bf16(如对称量化模型),不加处理会
@@ -229,13 +260,17 @@ vllm serve <bf16模型> --dtype float16 ...
 - `@triton.jit(key=[...])` → `@triton.jit`(去掉 `key=`,triton 3.5 已移除)
 
 ### 4. config 调优 (小 M 性能关键)
-BW10 有 80 CUs。调优后关键参数:
-- `BLOCK_SIZE_M=16, BLOCK_SIZE_N=64, BLOCK_SIZE_K=32`(down 大 K 用 BK=64)
-- **`SPLITK=2`** 对小 M(M=4,decode 批)是关键 —— 把 K 维 split 给多个 CU 做 reduce,
-  否则小 M 时 CU 利用率太低
-- `num_warps=4, NUM_CUS=80`
+BW10 有 48 CUs。调优后关键参数:
+- `BLOCK_SIZE_M=16, BLOCK_SIZE_K=32, NG(NUM_GROUPS)=1`(BK=32/NG=1 是安全配置,
+  BK=64/NG=2 在 BW10 上会触发 VMFault 崩溃)
+- **小形状**(N≤3584 等): `BLOCK_SIZE_N=64, SPLITK=2`
+- **大形状**(N=4096/5120/10752, K=4096/5376): `BLOCK_SIZE_N=128` + **自适应 SPLITK**
+  (按 M 取 3~16,M 越小 SPLITK 越大,把 K 维 split 给更多 CU 做 reduce)
+- `num_warps=4, NUM_CUS=48`
 
 未调优的 aiter 默认 config 比 vllm 还慢 10-28%;调优后比 vllm 快 1.6-2.33x(kernel 级, M=4)。
+SPLITK 离线调优对 kernel 级提速 ~1.5x(大形状),但 decode 端到端 GEMM 时间波动 2-3x 会淹没收益,
+故 SPLITK 主要保证大形状不慢、不崩,端到端 TPOT 收益来自 w4a16 kernel 本身。
 
 > 各模型的 shape 和具体 config 见 `models/<model>/README.md`。
 
@@ -244,7 +279,7 @@ BW10 有 80 CUs。调优后关键参数:
 ## 为新模型添加调优
 
 1. 用 `tests/gen_aiter_configs.py` 生成新模型各层 shape 的 config 骨架
-2. 用 `tests/tune_aiter_config.py` 扫描调优(或参考 gemma4 的 config 手动设 SPLITK=2 等)
+2. 用 `tests/tune_aiter_config.py` 扫描调优(或参考 gemma4 的 config;大形状用 BN=128+自适应 SPLITK,小形状用 BN=64/SK=2)
 3. 把调好的 config 放到 `models/<新模型>/configs/awq_w4a16/`
 4. `./patch.sh install <新模型>`
 

@@ -198,6 +198,13 @@ def _aiter_preprocess_layer(layer, w_q_name, w_s_name, w_zp_name, zp_bias=0):
         "scales": (w_s.data if hasattr(w_s, "data") else w_s).contiguous(),
         "launch": launch_fn,
     }
+    # aiter 路径只用 _aiter_w4a16_cache (aq/az/scales), 不再读原始 w_q/w_zp。
+    # 释放原始 repack 后的 qweight [K, N//8] int32 (~13.5GB) 避免 OOM (单卡 32GB)。
+    del w_q_data, b_q_awq, qzeros_awq
+    replace_parameter(layer, w_q_name, None)
+    if w_zp_name is not None and getattr(layer, w_zp_name, None) is not None:
+        replace_parameter(layer, w_zp_name, None)
+    torch.cuda.empty_cache()
 
 
 # 模块加载时若启用 patch, 立即加载 aiter (在编译路径外)
