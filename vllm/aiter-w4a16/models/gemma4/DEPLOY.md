@@ -50,21 +50,32 @@ gh release download <release-tag> \
 #   方式 C: 若 whl 已在别处, 直接拷贝/指定路径
 cp /path/to/flash_attn-*.whl vllm/flash-attn/dist/
 
-# 2.2 安装 (脚本会: 卸载旧 flash_attn → pip 装新 whl → 验证 import + 512 prefill 符号)
+# 2.2 安装 (脚本会: 卸载旧 flash_attn → pip 装新 whl → 验证 import + 512 prefill 符号
+#              → 打 vllm 侧 fp8_e5m2 patch, 改 3 个 vllm 源码文件)
 cd vllm/flash-attn
 bash patch.sh install
-bash patch.sh status        # 确认: "版本: 2.8.3+das.opt1..."
+bash patch.sh status        # 确认: whl "版本: 2.8.3+das.opt1..." + "fp8_e5m2 patch 已打"
 cd ../..                    # 回到 llm-optimize 根
 ```
 
-> `patch.sh install` 内部等价于:
+> `patch.sh install` 做两件事:
 > ```bash
+> # 1. 替换 flash_attn python 包 (whl, 200M)
 > pip3 uninstall -y flash_attn
 > pip3 install --force-reinstall --no-deps vllm/flash-attn/dist/flash_attn-2.8.3+das.opt1.dtk2604-cp310-cp310-linux_x86_64.whl
+>
+> # 2. 打 vllm 侧 fp8_e5m2 patch (patch -p0, 改 3 个 vllm 源码文件)
+> cd /usr/local/lib/python3.10/dist-packages && patch -p0 < vllm/flash-attn/flash_vllm_fp8e5m2.patch
 > ```
 > 若 whl 不在 `dist/`,可指定路径:`WHL=/path/to/flash_attn-*.whl bash patch.sh install`
 
 > `--no-deps` 很关键:避免 pip 顺带升级依赖(如 torch)破坏 DCU 环境。
+
+> **为什么必须改 vllm 源码?** 上游 vllm 对 compressed-tensors 模型一律禁用 `fp8_e5m2` KV cache
+> (在 `attention.py` 里无条件报错 `fp8_e5m2 kv-cache is not supported with fp8 checkpoints.`)。
+> 但我们的 AWQ-4bit 模型 checkpoint 里并没有 fp8 KV scale (`kv_cache_scheme=None`),
+> 只是运行时想把 KV cache 存成 e5m2。所以需要改 3 个文件放行 e5m2 并让读/写路径走 triton
+> (C++ `reshape_and_cache_flash` op 不支持 e5m2)。不打这个 vllm patch,新容器启动会直接报上面的错。
 
 ### 3. 启动服务(两阶段叠加)
 

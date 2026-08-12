@@ -1,0 +1,97 @@
+--- vllm/model_executor/layers/attention/attention.py
++++ vllm/model_executor/layers/attention/attention.py
+@@ -164,7 +164,13 @@
+         assert isinstance(quant_method, BaseKVCacheMethod)
+         # TODO (mgoin): kv cache dtype should be specified in the FP8
+         # checkpoint config and become the "auto" behavior
+-        if layer.kv_cache_dtype == "fp8_e5m2":
++        # 上游检查: compressed-tensors 模型一律返回 CompressedTensorsKVCacheMethod,
++        # 若用户指定 fp8_e5m2 就报错. 但该检查本意是 "checkpoint 里带 fp8 KV scale
++        # 时 e5m2 不支持". 我们的 AWQ-4bit 模型 kv_cache_scheme=None (无 KV scale),
++        # 只是想运行时把 KV cache 存成 e5m2 (scale=1.0), 与 checkpoint KV scale 无关.
++        # 故仅当 checkpoint 真的声明了 kv_cache_scheme 时才报错, 否则放行.
++        _ckpt_kv_scheme = getattr(quant_config, "kv_cache_scheme", None)
++        if layer.kv_cache_dtype == "fp8_e5m2" and _ckpt_kv_scheme is not None:
+             raise ValueError("fp8_e5m2 kv-cache is not supported with fp8 checkpoints.")
+         # If quantization is enabled, we make "k_scale" and "v_scale"
+         # parameters so that it can be loaded from the model checkpoint.
+@@ -464,7 +470,7 @@
+             # which reduces overheads during decoding.
+             # Otherwise queries are quantized using custom ops
+             # which causes decoding overheads
+-            assert self.kv_cache_dtype in {"fp8", "fp8_e4m3", "nvfp4"}
++            assert self.kv_cache_dtype in {"fp8", "fp8_e4m3", "fp8_e5m2", "nvfp4"}
+ 
+             # check if query quantization is supported
+             if self.impl.supports_quant_query_input:
+--- vllm/v1/attention/backends/rocm_aiter_unified_attn.py
++++ vllm/v1/attention/backends/rocm_aiter_unified_attn.py
+@@ -19,6 +19,9 @@
+     RocmAttentionMetadata,
+     RocmAttentionMetadataBuilder,
+ )
++from vllm.v1.attention.ops.triton_reshape_and_cache_flash import (
++    triton_reshape_and_cache_flash,
++)
+ 
+ logger = init_logger(__name__)
+ 
+@@ -126,6 +129,15 @@
+             kv_sharing_target_layer_name,
+             sinks,
+         )
++        # Override fp8_dtype to match the requested kv_cache_dtype.
++        # The base class sets self.fp8_dtype = current_platform.fp8_dtype()
++        # which is always e4m3 on ROCm. When the user requests fp8_e5m2, the
++        # cache write (triton_reshape_and_cache_flash) honours the kv_cache_dtype
++        # string and stores e5m2 bit patterns, so the read-side view() must also
++        # use e5m2 to interpret the bits correctly. e5m2 decode via
++        # varlen_fwd_unified is 4.7x faster than e4m3 on gfx936/head_dim=256.
++        if kv_cache_dtype == "fp8_e5m2":
++            self.fp8_dtype = torch.float8_e5m2
+         logger.info_once(
+             "Using aiter unified attention for RocmAiterUnifiedAttentionImpl"
+         )
+@@ -270,7 +282,10 @@
+         key_cache, value_cache = self._split_kv_cache(kv_cache)
+ 
+         # Reshape the input keys and values and store them in the cache.
+-        ops.reshape_and_cache_flash(
++        # 用 triton 写路径替代 C++ ops.reshape_and_cache_flash: C++ op 不支持
++        # fp8_e5m2 (cache_kernels.hip 报 "Unsupported data type of kv cache: fp8_e5m2"),
++        # triton wrapper 根据 cache tensor dtype 隐式 cast, 支持 e5m2.
++        triton_reshape_and_cache_flash(
+             key,
+             value,
+             key_cache,
+--- vllm/v1/attention/ops/triton_reshape_and_cache_flash.py
++++ vllm/v1/attention/ops/triton_reshape_and_cache_flash.py
+@@ -362,7 +362,8 @@
+         f"unsupported kv_cache_dtype (str), got {kv_cache_dtype}."
+     )
+     kv_cache_torch_dtype = (
+-        current_platform.fp8_dtype()
++        # fp8 KV cache 子类型由字符串决定: fp8_e5m2 -> e5m2, 其他 fp8 -> 平台默认 (e4m3)
++        (torch.float8_e5m2 if kv_cache_dtype == "fp8_e5m2" else current_platform.fp8_dtype())
+         if is_quantized_kv_cache(kv_cache_dtype)
+         else key_cache.dtype
+     )
+@@ -540,11 +541,13 @@
+     assert _is_supported_kv_cache_dtype(kv_cache_dtype), (
+         f"unsupported kv_cache_dtype (str), got {kv_cache_dtype}."
+     )
+-    kv_cache_torch_dtype = (
+-        current_platform.fp8_dtype()
+-        if is_quantized_kv_cache(kv_cache_dtype)
+-        else kv_cache.dtype
+-    )
++    if is_quantized_kv_cache(kv_cache_dtype):
++        if kv_cache.dtype == torch.uint8:
++            kv_cache_torch_dtype = current_platform.fp8_dtype()
++        else:
++            kv_cache_torch_dtype = kv_cache.dtype
++    else:
++        kv_cache_torch_dtype = kv_cache.dtype
+ 
+     if kv_cache.dtype != kv_cache_torch_dtype and is_quantized_kv_cache(kv_cache_dtype):
+         # to avoid erounous implicit cast in triton kernel (tl.store to uint8)

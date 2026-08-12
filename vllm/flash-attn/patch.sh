@@ -5,19 +5,38 @@
 # 让 gemma-4 MTP draft 模型的 full_attention 层 (head_dim=512) 走 flash
 # mixed kernel, 替代慢的 aiter 2D kernel。TPOT -40% (1.68x 加速), 精度无损。
 #
-# 用法:
-#   ./patch.sh install   # 安装: 卸载旧 flash_attn, 装本目录 whl, 验证
-#   ./patch.sh revert    # 回退: 卸载本 whl (需自行重装官方版)
-#   ./patch.sh status    # 查看当前 flash_attn 安装状态
+# 本 patch 改两层:
+#   1. flash_attn python 包 (pip whl, 200M, 替换官方版) —— 新增 fp8_e5m2
+#      mixed kernel + head_dim=512 prefill 符号。
+#   2. vllm 源码 (3 个文件, patch -p0) —— 让 vllm 支持 fp8_e5m2 KV cache:
+#        attention.py                       放行 e5m2 (原本对 compressed-tensors 模型一律报错)
+#        rocm_aiter_unified_attn.py         读侧 view 用 e5m2 + 写侧走 triton (C++ op 不支持 e5m2)
+#        triton_reshape_and_cache_flash.py  写侧按字符串选 e5m2 dtype
+#      不打这层 vllm patch, 新容器启动会报:
+#        ValueError: fp8_e5m2 kv-cache is not supported with fp8 checkpoints.
 #
-# 注: 本 patch 是替换 flash_attn python 包 (pip whl), 不改 vllm 源码。
-#     vllm 侧只需启动时设置环境变量 (见 models/gemma4/start_flash.sh)。
+# 用法:
+#   ./patch.sh install   # 安装: 卸载旧 flash_attn, 装本目录 whl, 打 vllm patch
+#   ./patch.sh revert    # 回退: 反向打 vllm patch + 卸载本 whl
+#   ./patch.sh status    # 查看当前安装状态 (whl + vllm patch)
 # ============================================================
 set -e
 
 # ---------- 路径配置 ----------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WHL_DIR="$SCRIPT_DIR/dist"
+
+# vllm 安装根目录 (pip 装的位置; vllm 侧 patch 在此目录下 -p0 执行)
+DIST_DIR=/usr/local/lib/python3.10/dist-packages
+
+# vllm 侧 patch (3 个文件: attention.py + rocm_aiter_unified_attn.py + triton_reshape_and_cache_flash.py)
+VLLM_PATCH="$SCRIPT_DIR/flash_vllm_fp8e5m2.patch"
+
+# vllm 侧被改的 3 个文件 (用于 status 检测)
+VLLM_ATTN="$DIST_DIR/vllm/model_executor/layers/attention/attention.py"
+VLLM_UNIFIED="$DIST_DIR/vllm/v1/attention/backends/rocm_aiter_unified_attn.py"
+VLLM_RESHAPE="$DIST_DIR/vllm/v1/attention/ops/triton_reshape_and_cache_flash.py"
+
 # 优先用环境变量 WHL 指定的 whl, 其次 dist/ 目录
 if [ -n "$WHL" ] && [ -f "$WHL" ]; then
     : # 用环境变量
@@ -35,16 +54,35 @@ ACTION="${1:-}"
 
 usage() {
     echo "用法: $0 {install|revert|status}"
-    echo "  install  安装本目录的 flash_attn whl"
-    echo "  revert   卸载本 whl (需自行重装官方版)"
+    echo "  install  装 flash_attn whl + 打 vllm 侧 fp8_e5m2 patch"
+    echo "  revert   反向打 vllm patch + 卸载本 whl"
     echo "  status   查看当前安装状态"
     exit 1
 }
 
 [ -z "$ACTION" ] && usage
 
+# 判断 vllm 侧 patch 是否已打 (检查 attention.py 是否含我们的标记)
+vllm_patch_state() {
+    if [ ! -f "$VLLM_ATTN" ]; then
+        echo "missing"
+    elif grep -q "_ckpt_kv_scheme" "$VLLM_ATTN" 2>/dev/null; then
+        echo "patch"
+    else
+        echo "original"
+    fi
+}
+
+# 清 torch.compile 缓存 (vllm 源码改动后必做)
+clear_compile_cache() {
+    info "清空 torch.compile 缓存..."
+    rm -rf /root/.cache/vllm/torch_compile_cache /tmp/torchinductor_root 2>/dev/null || true
+    rm -rf ~/.cache/vllm/torch_compile_cache 2>/dev/null || true
+}
+
 case "$ACTION" in
 install)
+    # ---------- 1. 装 flash_attn whl ----------
     if [ -z "$WHL" ]; then
         err "未找到 whl 文件: $WHL_DIR/flash_attn-*.whl"
         echo ""
@@ -56,10 +94,10 @@ install)
         echo "  或若已有 whl, 指定路径: WHL=/path/to/flash_attn-*.whl bash patch.sh install"
         exit 1
     fi
-    info "安装 flash_attn: $(basename "$WHL")"
+    info "==== 1/2 安装 flash_attn whl: $(basename "$WHL") ===="
     info "卸载旧版本..."
     pip3 uninstall -y flash_attn >/dev/null 2>&1 || true
-    info "安装新 whl..."
+    info "安装新 whl (--no-deps, 避免升级 torch 破坏 DCU 环境)..."
     pip3 install --force-reinstall --no-deps "$WHL"
     info "验证 import..."
     python3 -c "import flash_attn; print('  flash_attn version:', flash_attn.__version__)"
@@ -75,34 +113,103 @@ install)
     else
         warn "未找到 libflash_attention.so, 跳过符号验证"
     fi
+
+    # ---------- 2. 打 vllm 侧 fp8_e5m2 patch ----------
     echo ""
-    info "安装完成! 启动服务请用:"
+    info "==== 2/2 打 vllm 侧 fp8_e5m2 patch ===="
+    if [ ! -f "$VLLM_PATCH" ]; then
+        err "找不到 vllm 侧 patch: $VLLM_PATCH"
+        exit 1
+    fi
+    if [ ! -d "$DIST_DIR/vllm" ]; then
+        err "vllm 安装目录不存在: $DIST_DIR/vllm"
+        exit 1
+    fi
+
+    local_vllm_state=$(vllm_patch_state)
+    if [ "$local_vllm_state" = "patch" ]; then
+        warn "vllm 侧 patch 已打, 跳过 (如需重打请先 ./patch.sh revert)"
+    elif [ "$local_vllm_state" = "missing" ]; then
+        err "vllm 文件不存在: $VLLM_ATTN"
+        exit 1
+    else
+        info "打 patch: $VLLM_PATCH"
+        info "  (attention.py + rocm_aiter_unified_attn.py + triton_reshape_and_cache_flash.py)"
+        (cd "$DIST_DIR" && patch -p0 --no-backup-if-mismatch < "$VLLM_PATCH") 2>&1 | sed 's/^/  /'
+        info "vllm 侧 fp8_e5m2 patch 已应用"
+        clear_compile_cache
+    fi
+
+    echo ""
+    info "==== 安装完成! ===="
+    echo "  启动服务请用:"
     echo "    bash $SCRIPT_DIR/models/gemma4/start_flash.sh"
     echo ""
-    info "回退: $0 revert"
+    echo "  回退: $0 revert"
     ;;
 
 revert)
-    info "卸载本 flash_attn whl..."
+    # ---------- 1. 反向打 vllm 侧 patch ----------
+    info "==== 1/2 反向打 vllm 侧 fp8_e5m2 patch ===="
+    local_vllm_state=$(vllm_patch_state)
+    if [ "$local_vllm_state" = "original" ]; then
+        warn "vllm 侧未打 patch, 跳过"
+    elif [ "$local_vllm_state" = "missing" ]; then
+        err "vllm 文件不存在: $VLLM_ATTN"
+        exit 1
+    else
+        info "反向打 patch: $VLLM_PATCH"
+        (cd "$DIST_DIR" && patch -p0 -R --no-backup-if-mismatch < "$VLLM_PATCH") 2>&1 | sed 's/^/  /'
+        info "已回退 vllm 侧到原始状态"
+        clear_compile_cache
+    fi
+
+    # ---------- 2. 卸载 whl ----------
+    echo ""
+    info "==== 2/2 卸载 flash_attn whl ===="
     pip3 uninstall -y flash_attn
     warn "已卸载。如需恢复官方版, 请自行 pip3 install flash-attn 或重装 DCU 定制版。"
     ;;
 
 status)
-    info "当前 flash_attn 状态:"
+    info "==== flash_attn whl 状态 ===="
     VER=$(python3 -c "import flash_attn; print(flash_attn.__version__)" 2>/dev/null)
     PATH_INFO=$(python3 -c "import flash_attn; print(flash_attn.__file__)" 2>/dev/null)
     if [ -n "$VER" ]; then
         echo "  版本: $VER"
         echo "  路径: $PATH_INFO"
         if [ -n "$WHL" ]; then
-            WHL_VER=$(echo "$WHL" | grep -oE "flash_attn-[0-9.]+\+[a-z0-9.]+")
             case "$PATH_INFO" in
                 *dist-packages/flash_attn*) echo "  本包 whl: $(basename "$WHL")" ;;
             esac
         fi
     else
         echo "  未安装 flash_attn"
+    fi
+
+    echo ""
+    info "==== vllm 侧 fp8_e5m2 patch 状态 ===="
+    local_vllm_state=$(vllm_patch_state)
+    case "$local_vllm_state" in
+        patch)    info "attention.py : ${GREEN}fp8_e5m2 patch 已打${NC}" ;;
+        original) warn "attention.py : 原始版 (未打 patch)" ;;
+        missing)  err  "attention.py : 不存在 ($VLLM_ATTN)" ;;
+    esac
+    # 其余 2 个文件
+    if [ -f "$VLLM_UNIFIED" ]; then
+        if grep -q "triton_reshape_and_cache_flash" "$VLLM_UNIFIED" 2>/dev/null && \
+           grep -q "torch.float8_e5m2" "$VLLM_UNIFIED" 2>/dev/null; then
+            info "rocm_aiter_unified_attn.py : 已改 (e5m2 view + triton 写路径)"
+        else
+            warn "rocm_aiter_unified_attn.py : 原始版"
+        fi
+    fi
+    if [ -f "$VLLM_RESHAPE" ]; then
+        if grep -q "torch.float8_e5m2 if kv_cache_dtype" "$VLLM_RESHAPE" 2>/dev/null; then
+            info "triton_reshape_and_cache_flash.py : 已改 (e5m2 dtype 选择)"
+        else
+            warn "triton_reshape_and_cache_flash.py : 原始版"
+        fi
     fi
     ;;
 

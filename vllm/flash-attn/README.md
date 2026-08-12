@@ -36,9 +36,10 @@ gemma-4-31B-it-AWQ 的 MTP draft 模型有一个 `full_attention` 层：
 ```
 vllm/flash-attn/
 ├── README.md                          # 本文件
-├── patch.sh                           # 一键安装/回退/状态
-├── flash_fp8e5m2_512.patch            # 源码改动 patch（相对 flash-attention-cutlass）
-├── flash_fp8_hdim512_patch.md         # 源码改动详细说明（两层改动, 19 文件）
+├── patch.sh                           # 一键安装/回退/状态 (装 whl + 打 vllm 侧 patch)
+├── flash_fp8e5m2_512.patch            # flash-attention-cutlass 源码改动 patch (编译 whl 用, 已含在 dist/whl 里)
+├── flash_vllm_fp8e5m2.patch           # vllm 侧 fp8_e5m2 patch (改 3 个 vllm 文件, install 时自动打)
+├── flash_fp8_hdim512_patch.md         # flash 源码改动详细说明（两层改动, 19 文件）
 ├── dist/                              # whl 不入库, 从 GitHub Release 下载放到此
 │   └── flash_attn-2.8.3+das.opt1.dtk2604-cp310-cp310-linux_x86_64.whl  # 安装产物
 ├── new_files/                         # patch 中新增的两个 target 文件
@@ -66,8 +67,22 @@ bash models/gemma4/start_flash.sh
 
 ## 源码位置
 
-flash-attention-cutlass 源码与 vllm 同级目录（不在本目录）。本目录只放**产物 + patch + 文档**。
-源码改动见 `flash_fp8_hdim512_patch.md`，对应 patch 文件 `flash_fp8e5m2_512.patch`。
+本阶段改两层：
+
+1. **flash-attention-cutlass 源码**（与 vllm 同级目录，不在本目录）—— 新增 fp8_e5m2
+   mixed kernel + head_dim=512 prefill 符号，编译成 whl。改动见 `flash_fp8_hdim512_patch.md`，
+   对应 patch 文件 `flash_fp8e5m2_512.patch`。**已包含在 `dist/` 的 whl 里**，用户无需再编译，
+   只需从 GitHub Release 下载 whl 即可。
+
+2. **vllm 源码**（3 个文件，`patch.sh install` 自动打）—— 让 vllm 支持 `fp8_e5m2` KV cache：
+   - `vllm/model_executor/layers/attention/attention.py` — 放行 e5m2（上游对 compressed-tensors
+     模型一律报错 `fp8_e5m2 kv-cache is not supported with fp8 checkpoints.`，但 AWQ-4bit 模型
+     checkpoint 无 KV scale，只是运行时想存 e5m2）
+   - `vllm/v1/attention/backends/rocm_aiter_unified_attn.py` — 读侧 view 用 e5m2 + 写侧走 triton
+     （C++ `reshape_and_cache_flash` op 不支持 e5m2）
+   - `vllm/v1/attention/ops/triton_reshape_and_cache_flash.py` — 写侧按字符串选 e5m2 dtype
+
+   对应 patch 文件 `flash_vllm_fp8e5m2.patch`。不打这层，新容器启动会直接报上面的 ValueError。
 
 ## 编译说明
 

@@ -264,8 +264,6 @@
          K = c.partition_weight_shape[0]
          group_size = c.group_size if c.group_size != -1 else K
  
-
-##### 2/3  aiter gemm_a16w4.py (triton3.5 兼容) #####
 --- aiter/ops/triton/gemm_a16w4.py
 +++ aiter/ops/triton/gemm_a16w4.py
 @@ -960,7 +960,7 @@
