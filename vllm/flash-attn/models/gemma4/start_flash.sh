@@ -23,8 +23,14 @@ for i in ${HIP_VISIBLE_DEVICES//,/ }; do
 done
 
 export VLLM_AITER_W4A16_PATCH=1
+# prefill 是否走 flash mixed kernel:
+#   1 = prefill 走 flash (默认, 必须=1)
+#   0 = prefill 回退 aiter triton 2D —— fp8 KV 下 triton 2D 有编译 bug
+#       ('constexpr_type' object has no attribute 'is_ptr'), prefill 会崩, 不可用。
+# 因此 phase2 (ROCM_AITER_UNIFIED_ATTN + fp8 KV) prefill 必须走 flash, TTFT 回退
+# (vs phase1 TRITON_ATTN 的 1.06s) 是该路径的固有代价, 无 env 可绕。
 export ATTN_FLASH_PREFILL=1
-export ATTN_FLASH_HEAD512=1  # draft模型head_size=512也走flash  # prefill也走flash (gemma4 fp8 KV已验证cos0.9986, 2.6-3.3x faster)
+export ATTN_FLASH_HEAD512=1  # draft模型head_size=512的decode走flash (aiter 2D 无 tuned config, 14.7ms/call)
 
 MODEL_DIR=${MODEL_DIR:-/data/zq/models/gemma-4-31B-it-AWQ-4bit/}
 # MTP draft 模型路径: 默认与主模型同父目录下的 gemma-4-31B-it-assistant

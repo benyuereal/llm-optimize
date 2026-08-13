@@ -52,28 +52,42 @@ bash models/gemma4/start_flash.sh
 
 ### 第 4 步 · 性能 + 精度验证
 
-**性能**（batch 4，1024 input + 1024 output）：
+**性能**（batch 4，5120 input + 1024 output，全并发）：
 
 ```bash
-# 用 vllm 自带 benchmark_serving
-python3 -m vllm.entrypoints.openai.api_serving_benchmark \
-    --backend vllm-sse --model gemma-4-31b-it-awq-4bit \
-    --num-prompts 4 --request-rate 1 \
-    --prompt-len 1024 --output-len 1024
+# 与阶段一同一套 bench 命令，公平对比
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 vllm bench serve \
+    --backend vllm \
+    --base-url http://localhost:8001 \
+    --model gemma4 \
+    --tokenizer /data/zq/models/gemma-4-31B-it-AWQ-4bit/ \
+    --dataset-name random \
+    --random-input-len 5120 \
+    --random-output-len 1024 \
+    --num-prompts 4 \
+    --seed 42
 ```
 
-基准结果（本环境实测，4 并发，1024 input + 1024 output）：
+> **务必连跑两轮取第二轮稳态**：第一轮含 warmup（编译/图捕获），偏慢。
+> 关键指标：`Mean TPOT (ms)`、`Mean TTFT (ms)`、`Benchmark duration (s)`。
+>
+> 注意：不要加 `--request-rate 1`（每秒发 1 个请求会让后发请求排队，把排队时间
+> 算进 TTFT，造成 TTFT 虚高）。默认 `request-rate=inf` 全并发灌入，与阶段一一致。
+
+基准结果（本环境实测，4 并发，5120 input + 1024 output，request-rate=inf）：
 
 | 指标 | triton 基准 | flash (本优化) | 提升 |
 |------|-----------|--------------|------|
 | Mean TPOT (ms) | ~79 | **35.02** | **~2.25x** |
 | Median TPOT (ms) | ~79 | **34.81** | ~2.25x |
 | P99 TPOT (ms) | — | **36.16** | — |
-| Mean TTFT (ms) | — | **2192** | — |
 | Output 吞吐 (tok/s) | — | **107.02** | — |
 | MTP 接受率 (%) | ~96 | **98.08** | 持平/略升 |
 | 接受长度 (mean) | ~3.8 | **3.94** | 持平/略升 |
 | 位置0/1/2 接受率 (%) | — | **98.56 / 97.98 / 97.69** | — |
+
+> TTFT 与阶段一（TRITON_ATTN）持平（prefill 走 flash mixed kernel 在 kernel 级比
+> triton 快 1.46~4.33x，端到端 TTFT 不退化）。
 
 **精度**：
 

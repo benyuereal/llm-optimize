@@ -17,6 +17,8 @@ Claude Code → LiteLLM(协议转换) → vLLM(推理) → glm-5.2
 ```
 llm-optimize/
 ├── README.md            # 本文件
+├── docs/               # 性能优化技术文档
+│   └── aiter+flash.optimize.md # 技术总结 (两阶段原理/关键决策/踩坑记录)
 ├── .gitignore
 ├── proxy/               # 转发修复代理
 │   ├── README.md        # proxy 模块详细文档（问题分析、原理、使用）
@@ -44,6 +46,11 @@ llm-optimize/
         └── models/gemma4/
             └── DEPLOY.md    # ← 部署方案 (面向部署人员, 傻瓜式)
 ```
+
+## 性能优化技术总结
+
+完整的技术方案、关键决策、踩坑记录见 [`docs/aiter+flash.optimize.md`](docs/aiter+flash.optimize.md)
+(两阶段优化原理、瓶颈定位、flash fp8 KV + head_dim=512 实现、MTP 调参分析、稳定性排查、踩坑表)。
 
 ## vLLM w4a16 GEMM 加速 (Hygon DCU)
 
