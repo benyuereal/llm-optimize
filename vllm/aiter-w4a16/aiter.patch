@@ -12,8 +12,11 @@
 # 包含 3 部分 (与 patch.sh install 覆盖范围完全一致):
 #   1. vllm triton_w4a16.py  -> aiter 接入版 (核心: import bypass + gs32 repack + 对称/非对称兼容 + OOM释放)
 #   2. aiter gemm_a16w4.py   -> triton3.5 兼容 (@triton.utils.jit -> @triton.jit)
-#   3. aiter awq_w4a16 configs (gemma4, BW200, gs=32) 新增 x10 (含 SPLITK 调优:
-#      大形状 N=4096/5120/10752 用 BN=128+自适应SPLITK(3~16), BK=32/NG=1 安全配置)
+#   3. aiter awq_w4a16 configs (gemma4, BW200, gs=32) 新增 x10 (SPLITK 全 batch 调优:
+#      6 个 TP4 sharded 形状覆盖全部 cudagraph M(1..512)+prefill(1024/2048/4096),
+#      小 batch(M<=4)维持原 patch 配置, M>=8 用 SK!=1 最优(BK=32/NG=1 安全, SK 2~12),
+#      大 M(>=128) SK=1。SPLITK 精度无损(实测 cos=1.0000 vs 数学真值), VMFault 根因
+#      是 BK64/NG2 非 SK, BK32/NG1+任意 SK 生产稳定)
 #
 # 对称量化兼容: 对称(uint4b8)无 zp 张量, 函数内造全 8 zp (0x88888888),
 #   等价 (w-8)*scale。非对称用真实 zp。
@@ -277,184 +280,1160 @@
      output_ptr,
 
 
+
+
 ##### 3/3  aiter awq_w4a16 configs (新增) #####
 --- /dev/null
 +++ aiter/ops/triton/configs/gemm/awq_w4a16/awq_gemm_N=10752,K=5376,device_name=BW200,dtype=w4a16,group_size=32.json
-@@ -0,0 +1,162 @@
+@@ -0,0 +1,1136 @@
 +{
-+    "1": {
-+        "num_ctas": 1,
-+        "num_stages": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 12,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            1,
-+            10752
-+        ],
-+        "num_warps": 4
-+    },
-+    "2": {
-+        "num_ctas": 1,
-+        "num_stages": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 12,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            2,
-+            10752
-+        ],
-+        "num_warps": 4
-+    },
-+    "4": {
-+        "num_ctas": 1,
-+        "num_stages": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 8,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            4,
-+            10752
-+        ],
-+        "num_warps": 4
-+    },
-+    "8": {
-+        "num_ctas": 1,
-+        "num_stages": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 8,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            8,
-+            10752
-+        ],
-+        "num_warps": 4
-+    },
-+    "16": {
-+        "num_ctas": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 4,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            16,
-+            10752
-+        ]
-+    },
-+    "32": {
-+        "num_ctas": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 2,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            32,
-+            10752
-+        ]
-+    },
-+    "64": {
-+        "num_ctas": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 16,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 0,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 1,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            64,
-+            10752
-+        ]
-+    },
-+    "128": {
-+        "num_ctas": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 16,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 0,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 1,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            128,
-+            10752
-+        ]
-+    }
++  "1": {
++    "num_ctas": 1,
++    "num_stages": 1,
++    "USE_REDUCE_KERNEL": false,
++    "SCHEDULER": 0,
++    "BLOCK_SIZE_M": 16,
++    "D_DTYPE": 32,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "SPLITK": 12,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "NUM_GROUPS": 1,
++    "D_SHAPE": [
++      1,
++      10752
++    ],
++    "num_warps": 4
++  },
++  "2": {
++    "num_ctas": 1,
++    "num_stages": 1,
++    "USE_REDUCE_KERNEL": false,
++    "SCHEDULER": 0,
++    "BLOCK_SIZE_M": 16,
++    "D_DTYPE": 32,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "SPLITK": 12,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "NUM_GROUPS": 1,
++    "D_SHAPE": [
++      2,
++      10752
++    ],
++    "num_warps": 4
++  },
++  "4": {
++    "num_ctas": 1,
++    "num_stages": 1,
++    "USE_REDUCE_KERNEL": false,
++    "SCHEDULER": 0,
++    "BLOCK_SIZE_M": 16,
++    "D_DTYPE": 32,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "SPLITK": 8,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "NUM_GROUPS": 1,
++    "D_SHAPE": [
++      4,
++      10752
++    ],
++    "num_warps": 4
++  },
++  "8": {
++    "BLOCK_SIZE_M": 16,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 8,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      8,
++      10752
++    ]
++  },
++  "16": {
++    "BLOCK_SIZE_M": 16,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 4,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      16,
++      10752
++    ]
++  },
++  "24": {
++    "BLOCK_SIZE_M": 32,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 4,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      24,
++      10752
++    ]
++  },
++  "32": {
++    "BLOCK_SIZE_M": 32,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 2,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      32,
++      10752
++    ]
++  },
++  "40": {
++    "BLOCK_SIZE_M": 32,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 2,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      40,
++      10752
++    ]
++  },
++  "48": {
++    "BLOCK_SIZE_M": 32,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 2,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      48,
++      10752
++    ]
++  },
++  "56": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      56,
++      10752
++    ]
++  },
++  "64": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      64,
++      10752
++    ]
++  },
++  "72": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      72,
++      10752
++    ]
++  },
++  "80": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      80,
++      10752
++    ]
++  },
++  "88": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      88,
++      10752
++    ]
++  },
++  "96": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      96,
++      10752
++    ]
++  },
++  "104": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      104,
++      10752
++    ]
++  },
++  "112": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      112,
++      10752
++    ]
++  },
++  "120": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      120,
++      10752
++    ]
++  },
++  "128": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      128,
++      10752
++    ]
++  },
++  "136": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      136,
++      10752
++    ]
++  },
++  "144": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      144,
++      10752
++    ]
++  },
++  "152": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      152,
++      10752
++    ]
++  },
++  "160": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      160,
++      10752
++    ]
++  },
++  "168": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      168,
++      10752
++    ]
++  },
++  "176": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      176,
++      10752
++    ]
++  },
++  "184": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      184,
++      10752
++    ]
++  },
++  "192": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      192,
++      10752
++    ]
++  },
++  "200": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      200,
++      10752
++    ]
++  },
++  "208": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      208,
++      10752
++    ]
++  },
++  "216": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      216,
++      10752
++    ]
++  },
++  "224": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      224,
++      10752
++    ]
++  },
++  "232": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      232,
++      10752
++    ]
++  },
++  "240": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      240,
++      10752
++    ]
++  },
++  "248": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      248,
++      10752
++    ]
++  },
++  "256": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      256,
++      10752
++    ]
++  },
++  "272": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      272,
++      10752
++    ]
++  },
++  "288": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      288,
++      10752
++    ]
++  },
++  "304": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      304,
++      10752
++    ]
++  },
++  "320": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      320,
++      10752
++    ]
++  },
++  "336": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      336,
++      10752
++    ]
++  },
++  "352": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      352,
++      10752
++    ]
++  },
++  "368": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      368,
++      10752
++    ]
++  },
++  "384": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      384,
++      10752
++    ]
++  },
++  "400": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      400,
++      10752
++    ]
++  },
++  "416": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      416,
++      10752
++    ]
++  },
++  "432": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      432,
++      10752
++    ]
++  },
++  "448": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      448,
++      10752
++    ]
++  },
++  "464": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      464,
++      10752
++    ]
++  },
++  "480": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      480,
++      10752
++    ]
++  },
++  "496": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      496,
++      10752
++    ]
++  },
++  "512": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      512,
++      10752
++    ]
++  },
++  "1024": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      1024,
++      10752
++    ]
++  },
++  "2048": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      2048,
++      10752
++    ]
++  },
++  "4096": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      4096,
++      10752
++    ]
++  }
 +}
 \ No newline at end of file
 --- /dev/null
 +++ aiter/ops/triton/configs/gemm/awq_w4a16/awq_gemm_N=1344,K=14336,device_name=BW200,dtype=w4a16,group_size=32.json
-@@ -0,0 +1,170 @@
+@@ -0,0 +1,270 @@
 +{
 +    "1": {
 +        "BLOCK_SIZE_M": 16,
 +        "BLOCK_SIZE_N": 64,
-+        "BLOCK_SIZE_K": 128,
++        "BLOCK_SIZE_K": 32,
 +        "SCHEDULER": 0,
-+        "SPLITK": 1,
-+        "NUM_CUS": 0,
++        "SPLITK": 2,
++        "NUM_CUS": 80,
 +        "USE_REDUCE_KERNEL": false,
 +        "DP_TILES": 0,
 +        "DANGLING_TILES": 0,
@@ -472,10 +1451,10 @@
 +    "2": {
 +        "BLOCK_SIZE_M": 16,
 +        "BLOCK_SIZE_N": 64,
-+        "BLOCK_SIZE_K": 128,
++        "BLOCK_SIZE_K": 32,
 +        "SCHEDULER": 0,
-+        "SPLITK": 1,
-+        "NUM_CUS": 0,
++        "SPLITK": 2,
++        "NUM_CUS": 80,
 +        "USE_REDUCE_KERNEL": false,
 +        "DP_TILES": 0,
 +        "DANGLING_TILES": 0,
@@ -493,10 +1472,10 @@
 +    "4": {
 +        "BLOCK_SIZE_M": 16,
 +        "BLOCK_SIZE_N": 64,
-+        "BLOCK_SIZE_K": 128,
++        "BLOCK_SIZE_K": 32,
 +        "SCHEDULER": 0,
-+        "SPLITK": 1,
-+        "NUM_CUS": 0,
++        "SPLITK": 2,
++        "NUM_CUS": 80,
 +        "USE_REDUCE_KERNEL": false,
 +        "DP_TILES": 0,
 +        "DANGLING_TILES": 0,
@@ -514,10 +1493,10 @@
 +    "8": {
 +        "BLOCK_SIZE_M": 16,
 +        "BLOCK_SIZE_N": 64,
-+        "BLOCK_SIZE_K": 128,
++        "BLOCK_SIZE_K": 32,
 +        "SCHEDULER": 0,
-+        "SPLITK": 1,
-+        "NUM_CUS": 0,
++        "SPLITK": 2,
++        "NUM_CUS": 80,
 +        "USE_REDUCE_KERNEL": false,
 +        "DP_TILES": 0,
 +        "DANGLING_TILES": 0,
@@ -535,10 +1514,10 @@
 +    "16": {
 +        "BLOCK_SIZE_M": 16,
 +        "BLOCK_SIZE_N": 64,
-+        "BLOCK_SIZE_K": 128,
++        "BLOCK_SIZE_K": 32,
 +        "SCHEDULER": 0,
-+        "SPLITK": 1,
-+        "NUM_CUS": 0,
++        "SPLITK": 2,
++        "NUM_CUS": 80,
 +        "USE_REDUCE_KERNEL": false,
 +        "DP_TILES": 0,
 +        "DANGLING_TILES": 0,
@@ -556,10 +1535,10 @@
 +    "32": {
 +        "BLOCK_SIZE_M": 16,
 +        "BLOCK_SIZE_N": 64,
-+        "BLOCK_SIZE_K": 128,
++        "BLOCK_SIZE_K": 32,
 +        "SCHEDULER": 0,
-+        "SPLITK": 1,
-+        "NUM_CUS": 0,
++        "SPLITK": 2,
++        "NUM_CUS": 80,
 +        "USE_REDUCE_KERNEL": false,
 +        "DP_TILES": 0,
 +        "DANGLING_TILES": 0,
@@ -577,10 +1556,10 @@
 +    "64": {
 +        "BLOCK_SIZE_M": 16,
 +        "BLOCK_SIZE_N": 64,
-+        "BLOCK_SIZE_K": 128,
++        "BLOCK_SIZE_K": 32,
 +        "SCHEDULER": 0,
-+        "SPLITK": 1,
-+        "NUM_CUS": 0,
++        "SPLITK": 2,
++        "NUM_CUS": 80,
 +        "USE_REDUCE_KERNEL": false,
 +        "DP_TILES": 0,
 +        "DANGLING_TILES": 0,
@@ -596,12 +1575,12 @@
 +        "num_stages": 2
 +    },
 +    "128": {
-+        "BLOCK_SIZE_M": 32,
++        "BLOCK_SIZE_M": 16,
 +        "BLOCK_SIZE_N": 64,
-+        "BLOCK_SIZE_K": 128,
++        "BLOCK_SIZE_K": 32,
 +        "SCHEDULER": 0,
-+        "SPLITK": 1,
-+        "NUM_CUS": 0,
++        "SPLITK": 2,
++        "NUM_CUS": 80,
 +        "USE_REDUCE_KERNEL": false,
 +        "DP_TILES": 0,
 +        "DANGLING_TILES": 0,
@@ -615,842 +1594,3190 @@
 +        "num_warps": 4,
 +        "num_ctas": 1,
 +        "num_stages": 2
++    },
++    "256": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 128,
++        "BLOCK_SIZE_N": 128,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 1,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 16,
++        "D_SHAPE": [
++            256,
++            1344
++        ]
++    },
++    "512": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 128,
++        "BLOCK_SIZE_N": 128,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 1,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 16,
++        "D_SHAPE": [
++            512,
++            1344
++        ]
++    },
++    "1024": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 128,
++        "BLOCK_SIZE_N": 128,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 1,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 16,
++        "D_SHAPE": [
++            1024,
++            1344
++        ]
++    },
++    "2048": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 128,
++        "BLOCK_SIZE_N": 128,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 1,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 16,
++        "D_SHAPE": [
++            2048,
++            1344
++        ]
++    },
++    "4096": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 128,
++        "BLOCK_SIZE_N": 128,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 1,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 16,
++        "D_SHAPE": [
++            4096,
++            1344
++        ]
 +    }
 +}
 \ No newline at end of file
 --- /dev/null
 +++ aiter/ops/triton/configs/gemm/awq_w4a16/awq_gemm_N=1344,K=5376,device_name=BW200,dtype=w4a16,group_size=32.json
-@@ -0,0 +1,162 @@
+@@ -0,0 +1,262 @@
 +{
-+  "1": {
-+    "USE_REDUCE_KERNEL": false,
-+    "NUM_CUS": 80,
-+    "SCHEDULER": 0,
-+    "BLOCK_SIZE_M": 16,
-+    "BLOCK_SIZE_N": 64,
-+    "BLOCK_SIZE_K": 32,
-+    "SPLITK": 2,
-+    "num_warps": 4,
-+    "num_ctas": 1,
-+    "num_stages": 1,
-+    "NUM_GROUPS": 1,
-+    "DP_TILES": 0,
-+    "DANGLING_TILES": 0,
-+    "D_DTYPE": 32,
-+    "D_SHAPE": [
-+      1,
-+      1344
-+    ]
-+  },
-+  "2": {
-+    "USE_REDUCE_KERNEL": false,
-+    "NUM_CUS": 80,
-+    "SCHEDULER": 0,
-+    "BLOCK_SIZE_M": 16,
-+    "BLOCK_SIZE_N": 64,
-+    "BLOCK_SIZE_K": 32,
-+    "SPLITK": 2,
-+    "num_warps": 4,
-+    "num_ctas": 1,
-+    "num_stages": 1,
-+    "NUM_GROUPS": 1,
-+    "DP_TILES": 0,
-+    "DANGLING_TILES": 0,
-+    "D_DTYPE": 32,
-+    "D_SHAPE": [
-+      2,
-+      1344
-+    ]
-+  },
-+  "4": {
-+    "USE_REDUCE_KERNEL": false,
-+    "NUM_CUS": 80,
-+    "SCHEDULER": 0,
-+    "BLOCK_SIZE_M": 16,
-+    "BLOCK_SIZE_N": 64,
-+    "BLOCK_SIZE_K": 32,
-+    "SPLITK": 2,
-+    "num_warps": 4,
-+    "num_ctas": 1,
-+    "num_stages": 1,
-+    "NUM_GROUPS": 1,
-+    "DP_TILES": 0,
-+    "DANGLING_TILES": 0,
-+    "D_DTYPE": 32,
-+    "D_SHAPE": [
-+      4,
-+      1344
-+    ]
-+  },
-+  "8": {
-+    "USE_REDUCE_KERNEL": false,
-+    "NUM_CUS": 80,
-+    "SCHEDULER": 0,
-+    "BLOCK_SIZE_M": 16,
-+    "BLOCK_SIZE_N": 64,
-+    "BLOCK_SIZE_K": 32,
-+    "SPLITK": 2,
-+    "num_warps": 4,
-+    "num_ctas": 1,
-+    "num_stages": 1,
-+    "NUM_GROUPS": 1,
-+    "DP_TILES": 0,
-+    "DANGLING_TILES": 0,
-+    "D_DTYPE": 32,
-+    "D_SHAPE": [
-+      8,
-+      1344
-+    ]
-+  },
-+  "16": {
-+    "USE_REDUCE_KERNEL": false,
-+    "NUM_CUS": 80,
-+    "SCHEDULER": 0,
-+    "BLOCK_SIZE_M": 16,
-+    "BLOCK_SIZE_N": 64,
-+    "BLOCK_SIZE_K": 32,
-+    "SPLITK": 2,
-+    "num_warps": 4,
-+    "num_ctas": 1,
-+    "num_stages": 1,
-+    "NUM_GROUPS": 1,
-+    "DP_TILES": 0,
-+    "DANGLING_TILES": 0,
-+    "D_DTYPE": 32,
-+    "D_SHAPE": [
-+      16,
-+      1344
-+    ]
-+  },
-+  "32": {
-+    "USE_REDUCE_KERNEL": false,
-+    "NUM_CUS": 80,
-+    "SCHEDULER": 0,
-+    "BLOCK_SIZE_M": 16,
-+    "BLOCK_SIZE_N": 64,
-+    "BLOCK_SIZE_K": 32,
-+    "SPLITK": 2,
-+    "num_warps": 4,
-+    "num_ctas": 1,
-+    "num_stages": 1,
-+    "NUM_GROUPS": 1,
-+    "DP_TILES": 0,
-+    "DANGLING_TILES": 0,
-+    "D_DTYPE": 32,
-+    "D_SHAPE": [
-+      32,
-+      1344
-+    ]
-+  },
-+  "64": {
-+    "USE_REDUCE_KERNEL": false,
-+    "NUM_CUS": 80,
-+    "SCHEDULER": 0,
-+    "BLOCK_SIZE_M": 16,
-+    "BLOCK_SIZE_N": 64,
-+    "BLOCK_SIZE_K": 32,
-+    "SPLITK": 2,
-+    "num_warps": 4,
-+    "num_ctas": 1,
-+    "num_stages": 1,
-+    "NUM_GROUPS": 1,
-+    "DP_TILES": 0,
-+    "DANGLING_TILES": 0,
-+    "D_DTYPE": 32,
-+    "D_SHAPE": [
-+      64,
-+      1344
-+    ]
-+  },
-+  "128": {
-+    "USE_REDUCE_KERNEL": false,
-+    "NUM_CUS": 80,
-+    "SCHEDULER": 0,
-+    "BLOCK_SIZE_M": 16,
-+    "BLOCK_SIZE_N": 64,
-+    "BLOCK_SIZE_K": 32,
-+    "SPLITK": 2,
-+    "num_warps": 4,
-+    "num_ctas": 1,
-+    "num_stages": 1,
-+    "NUM_GROUPS": 1,
-+    "DP_TILES": 0,
-+    "DANGLING_TILES": 0,
-+    "D_DTYPE": 32,
-+    "D_SHAPE": [
-+      128,
-+      1344
-+    ]
-+  }
++    "1": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 16,
++        "BLOCK_SIZE_N": 64,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 2,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 32,
++        "D_SHAPE": [
++            1,
++            1344
++        ]
++    },
++    "2": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 16,
++        "BLOCK_SIZE_N": 64,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 2,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 32,
++        "D_SHAPE": [
++            2,
++            1344
++        ]
++    },
++    "4": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 16,
++        "BLOCK_SIZE_N": 64,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 2,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 32,
++        "D_SHAPE": [
++            4,
++            1344
++        ]
++    },
++    "8": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 16,
++        "BLOCK_SIZE_N": 64,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 2,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 32,
++        "D_SHAPE": [
++            8,
++            1344
++        ]
++    },
++    "16": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 16,
++        "BLOCK_SIZE_N": 64,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 2,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 32,
++        "D_SHAPE": [
++            16,
++            1344
++        ]
++    },
++    "32": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 16,
++        "BLOCK_SIZE_N": 64,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 2,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 32,
++        "D_SHAPE": [
++            32,
++            1344
++        ]
++    },
++    "64": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 16,
++        "BLOCK_SIZE_N": 64,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 2,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 32,
++        "D_SHAPE": [
++            64,
++            1344
++        ]
++    },
++    "128": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 16,
++        "BLOCK_SIZE_N": 64,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 2,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 32,
++        "D_SHAPE": [
++            128,
++            1344
++        ]
++    },
++    "256": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 128,
++        "BLOCK_SIZE_N": 128,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 1,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 16,
++        "D_SHAPE": [
++            256,
++            1344
++        ]
++    },
++    "512": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 128,
++        "BLOCK_SIZE_N": 128,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 1,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 16,
++        "D_SHAPE": [
++            512,
++            1344
++        ]
++    },
++    "1024": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 128,
++        "BLOCK_SIZE_N": 128,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 1,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 16,
++        "D_SHAPE": [
++            1024,
++            1344
++        ]
++    },
++    "2048": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 128,
++        "BLOCK_SIZE_N": 128,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 1,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 16,
++        "D_SHAPE": [
++            2048,
++            1344
++        ]
++    },
++    "4096": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 128,
++        "BLOCK_SIZE_N": 128,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 1,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 16,
++        "D_SHAPE": [
++            4096,
++            1344
++        ]
++    }
 +}
 \ No newline at end of file
 --- /dev/null
 +++ aiter/ops/triton/configs/gemm/awq_w4a16/awq_gemm_N=3584,K=5376,device_name=BW200,dtype=w4a16,group_size=32.json
-@@ -0,0 +1,162 @@
+@@ -0,0 +1,262 @@
 +{
-+  "1": {
-+    "USE_REDUCE_KERNEL": false,
-+    "NUM_CUS": 80,
-+    "SCHEDULER": 0,
-+    "BLOCK_SIZE_M": 16,
-+    "BLOCK_SIZE_N": 64,
-+    "BLOCK_SIZE_K": 32,
-+    "SPLITK": 2,
-+    "num_warps": 4,
-+    "num_ctas": 1,
-+    "num_stages": 1,
-+    "NUM_GROUPS": 1,
-+    "DP_TILES": 0,
-+    "DANGLING_TILES": 0,
-+    "D_DTYPE": 32,
-+    "D_SHAPE": [
-+      1,
-+      3584
-+    ]
-+  },
-+  "2": {
-+    "USE_REDUCE_KERNEL": false,
-+    "NUM_CUS": 80,
-+    "SCHEDULER": 0,
-+    "BLOCK_SIZE_M": 16,
-+    "BLOCK_SIZE_N": 64,
-+    "BLOCK_SIZE_K": 32,
-+    "SPLITK": 2,
-+    "num_warps": 4,
-+    "num_ctas": 1,
-+    "num_stages": 1,
-+    "NUM_GROUPS": 1,
-+    "DP_TILES": 0,
-+    "DANGLING_TILES": 0,
-+    "D_DTYPE": 32,
-+    "D_SHAPE": [
-+      2,
-+      3584
-+    ]
-+  },
-+  "4": {
-+    "USE_REDUCE_KERNEL": false,
-+    "NUM_CUS": 80,
-+    "SCHEDULER": 0,
-+    "BLOCK_SIZE_M": 16,
-+    "BLOCK_SIZE_N": 64,
-+    "BLOCK_SIZE_K": 32,
-+    "SPLITK": 2,
-+    "num_warps": 4,
-+    "num_ctas": 1,
-+    "num_stages": 1,
-+    "NUM_GROUPS": 1,
-+    "DP_TILES": 0,
-+    "DANGLING_TILES": 0,
-+    "D_DTYPE": 32,
-+    "D_SHAPE": [
-+      4,
-+      3584
-+    ]
-+  },
-+  "8": {
-+    "USE_REDUCE_KERNEL": false,
-+    "NUM_CUS": 80,
-+    "SCHEDULER": 0,
-+    "BLOCK_SIZE_M": 16,
-+    "BLOCK_SIZE_N": 64,
-+    "BLOCK_SIZE_K": 32,
-+    "SPLITK": 2,
-+    "num_warps": 4,
-+    "num_ctas": 1,
-+    "num_stages": 1,
-+    "NUM_GROUPS": 1,
-+    "DP_TILES": 0,
-+    "DANGLING_TILES": 0,
-+    "D_DTYPE": 32,
-+    "D_SHAPE": [
-+      8,
-+      3584
-+    ]
-+  },
-+  "16": {
-+    "USE_REDUCE_KERNEL": false,
-+    "NUM_CUS": 80,
-+    "SCHEDULER": 0,
-+    "BLOCK_SIZE_M": 16,
-+    "BLOCK_SIZE_N": 64,
-+    "BLOCK_SIZE_K": 32,
-+    "SPLITK": 2,
-+    "num_warps": 4,
-+    "num_ctas": 1,
-+    "num_stages": 1,
-+    "NUM_GROUPS": 1,
-+    "DP_TILES": 0,
-+    "DANGLING_TILES": 0,
-+    "D_DTYPE": 32,
-+    "D_SHAPE": [
-+      16,
-+      3584
-+    ]
-+  },
-+  "32": {
-+    "USE_REDUCE_KERNEL": false,
-+    "NUM_CUS": 80,
-+    "SCHEDULER": 0,
-+    "BLOCK_SIZE_M": 16,
-+    "BLOCK_SIZE_N": 64,
-+    "BLOCK_SIZE_K": 32,
-+    "SPLITK": 2,
-+    "num_warps": 4,
-+    "num_ctas": 1,
-+    "num_stages": 1,
-+    "NUM_GROUPS": 1,
-+    "DP_TILES": 0,
-+    "DANGLING_TILES": 0,
-+    "D_DTYPE": 32,
-+    "D_SHAPE": [
-+      32,
-+      3584
-+    ]
-+  },
-+  "64": {
-+    "USE_REDUCE_KERNEL": false,
-+    "NUM_CUS": 80,
-+    "SCHEDULER": 0,
-+    "BLOCK_SIZE_M": 16,
-+    "BLOCK_SIZE_N": 64,
-+    "BLOCK_SIZE_K": 32,
-+    "SPLITK": 2,
-+    "num_warps": 4,
-+    "num_ctas": 1,
-+    "num_stages": 1,
-+    "NUM_GROUPS": 1,
-+    "DP_TILES": 0,
-+    "DANGLING_TILES": 0,
-+    "D_DTYPE": 32,
-+    "D_SHAPE": [
-+      64,
-+      3584
-+    ]
-+  },
-+  "128": {
-+    "USE_REDUCE_KERNEL": false,
-+    "NUM_CUS": 80,
-+    "SCHEDULER": 0,
-+    "BLOCK_SIZE_M": 16,
-+    "BLOCK_SIZE_N": 64,
-+    "BLOCK_SIZE_K": 32,
-+    "SPLITK": 2,
-+    "num_warps": 4,
-+    "num_ctas": 1,
-+    "num_stages": 1,
-+    "NUM_GROUPS": 1,
-+    "DP_TILES": 0,
-+    "DANGLING_TILES": 0,
-+    "D_DTYPE": 32,
-+    "D_SHAPE": [
-+      128,
-+      3584
-+    ]
-+  }
++    "1": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 16,
++        "BLOCK_SIZE_N": 64,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 2,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 32,
++        "D_SHAPE": [
++            1,
++            3584
++        ]
++    },
++    "2": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 16,
++        "BLOCK_SIZE_N": 64,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 2,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 32,
++        "D_SHAPE": [
++            2,
++            3584
++        ]
++    },
++    "4": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 16,
++        "BLOCK_SIZE_N": 64,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 2,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 32,
++        "D_SHAPE": [
++            4,
++            3584
++        ]
++    },
++    "8": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 16,
++        "BLOCK_SIZE_N": 64,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 2,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 32,
++        "D_SHAPE": [
++            8,
++            3584
++        ]
++    },
++    "16": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 16,
++        "BLOCK_SIZE_N": 64,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 2,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 32,
++        "D_SHAPE": [
++            16,
++            3584
++        ]
++    },
++    "32": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 16,
++        "BLOCK_SIZE_N": 64,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 2,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 32,
++        "D_SHAPE": [
++            32,
++            3584
++        ]
++    },
++    "64": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 16,
++        "BLOCK_SIZE_N": 64,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 2,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 32,
++        "D_SHAPE": [
++            64,
++            3584
++        ]
++    },
++    "128": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 16,
++        "BLOCK_SIZE_N": 64,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 2,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 32,
++        "D_SHAPE": [
++            128,
++            3584
++        ]
++    },
++    "256": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 128,
++        "BLOCK_SIZE_N": 128,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 1,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 16,
++        "D_SHAPE": [
++            256,
++            3584
++        ]
++    },
++    "512": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 128,
++        "BLOCK_SIZE_N": 128,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 1,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 16,
++        "D_SHAPE": [
++            512,
++            3584
++        ]
++    },
++    "1024": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 128,
++        "BLOCK_SIZE_N": 128,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 1,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 16,
++        "D_SHAPE": [
++            1024,
++            3584
++        ]
++    },
++    "2048": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 128,
++        "BLOCK_SIZE_N": 128,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 1,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 16,
++        "D_SHAPE": [
++            2048,
++            3584
++        ]
++    },
++    "4096": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 128,
++        "BLOCK_SIZE_N": 128,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 1,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 16,
++        "D_SHAPE": [
++            4096,
++            3584
++        ]
++    }
 +}
 \ No newline at end of file
 --- /dev/null
 +++ aiter/ops/triton/configs/gemm/awq_w4a16/awq_gemm_N=4096,K=5376,device_name=BW200,dtype=w4a16,group_size=32.json
-@@ -0,0 +1,162 @@
-+{
-+    "1": {
-+        "num_ctas": 1,
-+        "num_stages": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 16,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            1,
-+            4096
-+        ],
-+        "num_warps": 4
-+    },
-+    "2": {
-+        "num_ctas": 1,
-+        "num_stages": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 12,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            2,
-+            4096
-+        ],
-+        "num_warps": 4
-+    },
-+    "4": {
-+        "num_ctas": 1,
-+        "num_stages": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 12,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            4,
-+            4096
-+        ],
-+        "num_warps": 4
-+    },
-+    "8": {
-+        "num_ctas": 1,
-+        "num_stages": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 6,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            8,
-+            4096
-+        ],
-+        "num_warps": 4
-+    },
-+    "16": {
-+        "num_ctas": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 6,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            16,
-+            4096
-+        ]
-+    },
-+    "32": {
-+        "num_ctas": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 3,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            32,
-+            4096
-+        ]
-+    },
-+    "64": {
-+        "num_ctas": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 3,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            64,
-+            4096
-+        ]
-+    },
-+    "128": {
-+        "num_ctas": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 3,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            128,
-+            4096
-+        ]
-+    }
-+}
-\ No newline at end of file
---- /dev/null
-+++ aiter/ops/triton/configs/gemm/awq_w4a16/awq_gemm_N=5120,K=5376,device_name=BW200,dtype=w4a16,group_size=32.json
-@@ -0,0 +1,162 @@
-+{
-+    "1": {
-+        "num_ctas": 1,
-+        "num_stages": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 12,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            1,
-+            5120
-+        ],
-+        "num_warps": 4
-+    },
-+    "2": {
-+        "num_ctas": 1,
-+        "num_stages": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 12,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            2,
-+            5120
-+        ],
-+        "num_warps": 4
-+    },
-+    "4": {
-+        "num_ctas": 1,
-+        "num_stages": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 12,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            4,
-+            5120
-+        ],
-+        "num_warps": 4
-+    },
-+    "8": {
-+        "num_ctas": 1,
-+        "num_stages": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 8,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            8,
-+            5120
-+        ],
-+        "num_warps": 4
-+    },
-+    "16": {
-+        "num_ctas": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 6,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            16,
-+            5120
-+        ]
-+    },
-+    "32": {
-+        "num_ctas": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 3,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            32,
-+            5120
-+        ]
-+    },
-+    "64": {
-+        "num_ctas": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 3,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            64,
-+            5120
-+        ]
-+    },
-+    "128": {
-+        "num_ctas": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 3,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            128,
-+            5120
-+        ]
-+    }
-+}
-\ No newline at end of file
---- /dev/null
-+++ aiter/ops/triton/configs/gemm/awq_w4a16/awq_gemm_N=5376,K=14336,device_name=BW200,dtype=w4a16,group_size=32.json
-@@ -0,0 +1,162 @@
+@@ -0,0 +1,1136 @@
 +{
 +  "1": {
-+    "USE_REDUCE_KERNEL": false,
-+    "NUM_CUS": 80,
-+    "SCHEDULER": 0,
-+    "BLOCK_SIZE_M": 16,
-+    "BLOCK_SIZE_N": 64,
-+    "BLOCK_SIZE_K": 64,
-+    "SPLITK": 1,
-+    "num_warps": 4,
 +    "num_ctas": 1,
 +    "num_stages": 1,
-+    "NUM_GROUPS": 2,
++    "USE_REDUCE_KERNEL": false,
++    "SCHEDULER": 0,
++    "BLOCK_SIZE_M": 16,
++    "D_DTYPE": 32,
 +    "DP_TILES": 0,
 +    "DANGLING_TILES": 0,
-+    "D_DTYPE": 16,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "SPLITK": 16,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "NUM_GROUPS": 1,
 +    "D_SHAPE": [
 +      1,
-+      5376
-+    ]
++      4096
++    ],
++    "num_warps": 4
 +  },
 +  "2": {
-+    "USE_REDUCE_KERNEL": false,
-+    "NUM_CUS": 80,
-+    "SCHEDULER": 0,
-+    "BLOCK_SIZE_M": 16,
-+    "BLOCK_SIZE_N": 64,
-+    "BLOCK_SIZE_K": 64,
-+    "SPLITK": 1,
-+    "num_warps": 4,
 +    "num_ctas": 1,
 +    "num_stages": 1,
-+    "NUM_GROUPS": 2,
++    "USE_REDUCE_KERNEL": false,
++    "SCHEDULER": 0,
++    "BLOCK_SIZE_M": 16,
++    "D_DTYPE": 32,
 +    "DP_TILES": 0,
 +    "DANGLING_TILES": 0,
-+    "D_DTYPE": 16,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "SPLITK": 12,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "NUM_GROUPS": 1,
 +    "D_SHAPE": [
 +      2,
-+      5376
-+    ]
++      4096
++    ],
++    "num_warps": 4
 +  },
 +  "4": {
-+    "USE_REDUCE_KERNEL": false,
-+    "NUM_CUS": 80,
-+    "SCHEDULER": 0,
-+    "BLOCK_SIZE_M": 16,
-+    "BLOCK_SIZE_N": 64,
-+    "BLOCK_SIZE_K": 64,
-+    "SPLITK": 1,
-+    "num_warps": 4,
 +    "num_ctas": 1,
 +    "num_stages": 1,
-+    "NUM_GROUPS": 2,
++    "USE_REDUCE_KERNEL": false,
++    "SCHEDULER": 0,
++    "BLOCK_SIZE_M": 16,
++    "D_DTYPE": 32,
 +    "DP_TILES": 0,
 +    "DANGLING_TILES": 0,
-+    "D_DTYPE": 16,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "SPLITK": 12,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "NUM_GROUPS": 1,
 +    "D_SHAPE": [
 +      4,
-+      5376
-+    ]
++      4096
++    ],
++    "num_warps": 4
 +  },
 +  "8": {
-+    "USE_REDUCE_KERNEL": false,
-+    "NUM_CUS": 80,
-+    "SCHEDULER": 0,
 +    "BLOCK_SIZE_M": 16,
-+    "BLOCK_SIZE_N": 64,
-+    "BLOCK_SIZE_K": 64,
-+    "SPLITK": 1,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 12,
++    "SCHEDULER": 0,
 +    "num_warps": 4,
 +    "num_ctas": 1,
 +    "num_stages": 1,
-+    "NUM_GROUPS": 2,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
 +    "DP_TILES": 0,
 +    "DANGLING_TILES": 0,
-+    "D_DTYPE": 16,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
 +    "D_SHAPE": [
 +      8,
-+      5376
++      4096
 +    ]
 +  },
 +  "16": {
-+    "USE_REDUCE_KERNEL": false,
-+    "NUM_CUS": 80,
-+    "SCHEDULER": 0,
 +    "BLOCK_SIZE_M": 16,
-+    "BLOCK_SIZE_N": 64,
-+    "BLOCK_SIZE_K": 64,
-+    "SPLITK": 1,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 6,
++    "SCHEDULER": 0,
 +    "num_warps": 4,
 +    "num_ctas": 1,
 +    "num_stages": 1,
-+    "NUM_GROUPS": 2,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
 +    "DP_TILES": 0,
 +    "DANGLING_TILES": 0,
-+    "D_DTYPE": 16,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
 +    "D_SHAPE": [
 +      16,
-+      5376
++      4096
++    ]
++  },
++  "24": {
++    "BLOCK_SIZE_M": 32,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 6,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      24,
++      4096
 +    ]
 +  },
 +  "32": {
-+    "USE_REDUCE_KERNEL": false,
-+    "NUM_CUS": 80,
++    "BLOCK_SIZE_M": 32,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 6,
 +    "SCHEDULER": 0,
-+    "BLOCK_SIZE_M": 16,
-+    "BLOCK_SIZE_N": 64,
-+    "BLOCK_SIZE_K": 64,
-+    "SPLITK": 1,
 +    "num_warps": 4,
 +    "num_ctas": 1,
 +    "num_stages": 1,
-+    "NUM_GROUPS": 2,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
 +    "DP_TILES": 0,
 +    "DANGLING_TILES": 0,
-+    "D_DTYPE": 16,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
 +    "D_SHAPE": [
 +      32,
-+      5376
++      4096
++    ]
++  },
++  "40": {
++    "BLOCK_SIZE_M": 32,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 6,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      40,
++      4096
++    ]
++  },
++  "48": {
++    "BLOCK_SIZE_M": 32,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 6,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      48,
++      4096
++    ]
++  },
++  "56": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 3,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      56,
++      4096
 +    ]
 +  },
 +  "64": {
-+    "USE_REDUCE_KERNEL": false,
-+    "NUM_CUS": 80,
-+    "SCHEDULER": 0,
-+    "BLOCK_SIZE_M": 16,
++    "BLOCK_SIZE_M": 64,
 +    "BLOCK_SIZE_N": 64,
-+    "BLOCK_SIZE_K": 64,
-+    "SPLITK": 1,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 3,
++    "SCHEDULER": 0,
 +    "num_warps": 4,
 +    "num_ctas": 1,
 +    "num_stages": 1,
-+    "NUM_GROUPS": 2,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
 +    "DP_TILES": 0,
 +    "DANGLING_TILES": 0,
-+    "D_DTYPE": 16,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
 +    "D_SHAPE": [
 +      64,
-+      5376
++      4096
++    ]
++  },
++  "72": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 3,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      72,
++      4096
++    ]
++  },
++  "80": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 3,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      80,
++      4096
++    ]
++  },
++  "88": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 3,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      88,
++      4096
++    ]
++  },
++  "96": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 3,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      96,
++      4096
++    ]
++  },
++  "104": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      104,
++      4096
++    ]
++  },
++  "112": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      112,
++      4096
++    ]
++  },
++  "120": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      120,
++      4096
 +    ]
 +  },
 +  "128": {
-+    "USE_REDUCE_KERNEL": false,
-+    "NUM_CUS": 80,
-+    "SCHEDULER": 0,
-+    "BLOCK_SIZE_M": 16,
++    "BLOCK_SIZE_M": 64,
 +    "BLOCK_SIZE_N": 64,
-+    "BLOCK_SIZE_K": 64,
++    "BLOCK_SIZE_K": 32,
 +    "SPLITK": 1,
++    "SCHEDULER": 0,
 +    "num_warps": 4,
 +    "num_ctas": 1,
 +    "num_stages": 1,
-+    "NUM_GROUPS": 2,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
 +    "DP_TILES": 0,
 +    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
 +    "D_DTYPE": 16,
 +    "D_SHAPE": [
 +      128,
-+      5376
++      4096
++    ]
++  },
++  "136": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      136,
++      4096
++    ]
++  },
++  "144": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      144,
++      4096
++    ]
++  },
++  "152": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      152,
++      4096
++    ]
++  },
++  "160": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      160,
++      4096
++    ]
++  },
++  "168": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      168,
++      4096
++    ]
++  },
++  "176": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      176,
++      4096
++    ]
++  },
++  "184": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      184,
++      4096
++    ]
++  },
++  "192": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      192,
++      4096
++    ]
++  },
++  "200": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      200,
++      4096
++    ]
++  },
++  "208": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      208,
++      4096
++    ]
++  },
++  "216": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      216,
++      4096
++    ]
++  },
++  "224": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      224,
++      4096
++    ]
++  },
++  "232": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      232,
++      4096
++    ]
++  },
++  "240": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      240,
++      4096
++    ]
++  },
++  "248": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      248,
++      4096
++    ]
++  },
++  "256": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      256,
++      4096
++    ]
++  },
++  "272": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      272,
++      4096
++    ]
++  },
++  "288": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      288,
++      4096
++    ]
++  },
++  "304": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      304,
++      4096
++    ]
++  },
++  "320": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      320,
++      4096
++    ]
++  },
++  "336": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      336,
++      4096
++    ]
++  },
++  "352": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      352,
++      4096
++    ]
++  },
++  "368": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      368,
++      4096
++    ]
++  },
++  "384": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      384,
++      4096
++    ]
++  },
++  "400": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      400,
++      4096
++    ]
++  },
++  "416": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      416,
++      4096
++    ]
++  },
++  "432": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      432,
++      4096
++    ]
++  },
++  "448": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      448,
++      4096
++    ]
++  },
++  "464": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      464,
++      4096
++    ]
++  },
++  "480": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      480,
++      4096
++    ]
++  },
++  "496": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      496,
++      4096
++    ]
++  },
++  "512": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      512,
++      4096
++    ]
++  },
++  "1024": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      1024,
++      4096
++    ]
++  },
++  "2048": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      2048,
++      4096
++    ]
++  },
++  "4096": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      4096,
++      4096
 +    ]
 +  }
 +}
 \ No newline at end of file
 --- /dev/null
++++ aiter/ops/triton/configs/gemm/awq_w4a16/awq_gemm_N=5120,K=5376,device_name=BW200,dtype=w4a16,group_size=32.json
+@@ -0,0 +1,1136 @@
++{
++  "1": {
++    "num_ctas": 1,
++    "num_stages": 1,
++    "USE_REDUCE_KERNEL": false,
++    "SCHEDULER": 0,
++    "BLOCK_SIZE_M": 16,
++    "D_DTYPE": 32,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "SPLITK": 12,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "NUM_GROUPS": 1,
++    "D_SHAPE": [
++      1,
++      5120
++    ],
++    "num_warps": 4
++  },
++  "2": {
++    "num_ctas": 1,
++    "num_stages": 1,
++    "USE_REDUCE_KERNEL": false,
++    "SCHEDULER": 0,
++    "BLOCK_SIZE_M": 16,
++    "D_DTYPE": 32,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "SPLITK": 12,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "NUM_GROUPS": 1,
++    "D_SHAPE": [
++      2,
++      5120
++    ],
++    "num_warps": 4
++  },
++  "4": {
++    "num_ctas": 1,
++    "num_stages": 1,
++    "USE_REDUCE_KERNEL": false,
++    "SCHEDULER": 0,
++    "BLOCK_SIZE_M": 16,
++    "D_DTYPE": 32,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "SPLITK": 12,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "NUM_GROUPS": 1,
++    "D_SHAPE": [
++      4,
++      5120
++    ],
++    "num_warps": 4
++  },
++  "8": {
++    "BLOCK_SIZE_M": 16,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 12,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      8,
++      5120
++    ]
++  },
++  "16": {
++    "BLOCK_SIZE_M": 16,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 6,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      16,
++      5120
++    ]
++  },
++  "24": {
++    "BLOCK_SIZE_M": 32,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 3,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      24,
++      5120
++    ]
++  },
++  "32": {
++    "BLOCK_SIZE_M": 32,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 3,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      32,
++      5120
++    ]
++  },
++  "40": {
++    "BLOCK_SIZE_M": 32,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 3,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      40,
++      5120
++    ]
++  },
++  "48": {
++    "BLOCK_SIZE_M": 32,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 3,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      48,
++      5120
++    ]
++  },
++  "56": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 2,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      56,
++      5120
++    ]
++  },
++  "64": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 2,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      64,
++      5120
++    ]
++  },
++  "72": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 2,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      72,
++      5120
++    ]
++  },
++  "80": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 2,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      80,
++      5120
++    ]
++  },
++  "88": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 2,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      88,
++      5120
++    ]
++  },
++  "96": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 2,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      96,
++      5120
++    ]
++  },
++  "104": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      104,
++      5120
++    ]
++  },
++  "112": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      112,
++      5120
++    ]
++  },
++  "120": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      120,
++      5120
++    ]
++  },
++  "128": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      128,
++      5120
++    ]
++  },
++  "136": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      136,
++      5120
++    ]
++  },
++  "144": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      144,
++      5120
++    ]
++  },
++  "152": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      152,
++      5120
++    ]
++  },
++  "160": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      160,
++      5120
++    ]
++  },
++  "168": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      168,
++      5120
++    ]
++  },
++  "176": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      176,
++      5120
++    ]
++  },
++  "184": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      184,
++      5120
++    ]
++  },
++  "192": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      192,
++      5120
++    ]
++  },
++  "200": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      200,
++      5120
++    ]
++  },
++  "208": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      208,
++      5120
++    ]
++  },
++  "216": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      216,
++      5120
++    ]
++  },
++  "224": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      224,
++      5120
++    ]
++  },
++  "232": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      232,
++      5120
++    ]
++  },
++  "240": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      240,
++      5120
++    ]
++  },
++  "248": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      248,
++      5120
++    ]
++  },
++  "256": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      256,
++      5120
++    ]
++  },
++  "272": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      272,
++      5120
++    ]
++  },
++  "288": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      288,
++      5120
++    ]
++  },
++  "304": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      304,
++      5120
++    ]
++  },
++  "320": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      320,
++      5120
++    ]
++  },
++  "336": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      336,
++      5120
++    ]
++  },
++  "352": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      352,
++      5120
++    ]
++  },
++  "368": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      368,
++      5120
++    ]
++  },
++  "384": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      384,
++      5120
++    ]
++  },
++  "400": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      400,
++      5120
++    ]
++  },
++  "416": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      416,
++      5120
++    ]
++  },
++  "432": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      432,
++      5120
++    ]
++  },
++  "448": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      448,
++      5120
++    ]
++  },
++  "464": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      464,
++      5120
++    ]
++  },
++  "480": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      480,
++      5120
++    ]
++  },
++  "496": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      496,
++      5120
++    ]
++  },
++  "512": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      512,
++      5120
++    ]
++  },
++  "1024": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      1024,
++      5120
++    ]
++  },
++  "2048": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      2048,
++      5120
++    ]
++  },
++  "4096": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      4096,
++      5120
++    ]
++  }
++}
+\ No newline at end of file
+--- /dev/null
++++ aiter/ops/triton/configs/gemm/awq_w4a16/awq_gemm_N=5376,K=14336,device_name=BW200,dtype=w4a16,group_size=32.json
+@@ -0,0 +1,262 @@
++{
++    "1": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 16,
++        "BLOCK_SIZE_N": 64,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 2,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 2,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 16,
++        "D_SHAPE": [
++            1,
++            5376
++        ]
++    },
++    "2": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 16,
++        "BLOCK_SIZE_N": 64,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 2,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 2,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 16,
++        "D_SHAPE": [
++            2,
++            5376
++        ]
++    },
++    "4": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 16,
++        "BLOCK_SIZE_N": 64,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 2,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 2,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 16,
++        "D_SHAPE": [
++            4,
++            5376
++        ]
++    },
++    "8": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 16,
++        "BLOCK_SIZE_N": 64,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 2,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 2,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 16,
++        "D_SHAPE": [
++            8,
++            5376
++        ]
++    },
++    "16": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 16,
++        "BLOCK_SIZE_N": 64,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 2,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 2,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 16,
++        "D_SHAPE": [
++            16,
++            5376
++        ]
++    },
++    "32": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 16,
++        "BLOCK_SIZE_N": 64,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 2,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 2,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 16,
++        "D_SHAPE": [
++            32,
++            5376
++        ]
++    },
++    "64": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 16,
++        "BLOCK_SIZE_N": 64,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 2,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 2,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 16,
++        "D_SHAPE": [
++            64,
++            5376
++        ]
++    },
++    "128": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 16,
++        "BLOCK_SIZE_N": 64,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 2,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 2,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 16,
++        "D_SHAPE": [
++            128,
++            5376
++        ]
++    },
++    "256": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 128,
++        "BLOCK_SIZE_N": 128,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 1,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 16,
++        "D_SHAPE": [
++            256,
++            5376
++        ]
++    },
++    "512": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 128,
++        "BLOCK_SIZE_N": 128,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 1,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 16,
++        "D_SHAPE": [
++            512,
++            5376
++        ]
++    },
++    "1024": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 128,
++        "BLOCK_SIZE_N": 128,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 1,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 16,
++        "D_SHAPE": [
++            1024,
++            5376
++        ]
++    },
++    "2048": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 128,
++        "BLOCK_SIZE_N": 128,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 1,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 16,
++        "D_SHAPE": [
++            2048,
++            5376
++        ]
++    },
++    "4096": {
++        "USE_REDUCE_KERNEL": false,
++        "NUM_CUS": 80,
++        "SCHEDULER": 0,
++        "BLOCK_SIZE_M": 128,
++        "BLOCK_SIZE_N": 128,
++        "BLOCK_SIZE_K": 32,
++        "SPLITK": 1,
++        "num_warps": 4,
++        "num_ctas": 1,
++        "num_stages": 1,
++        "NUM_GROUPS": 1,
++        "DP_TILES": 0,
++        "DANGLING_TILES": 0,
++        "D_DTYPE": 16,
++        "D_SHAPE": [
++            4096,
++            5376
++        ]
++    }
++}
+\ No newline at end of file
+--- /dev/null
 +++ aiter/ops/triton/configs/gemm/awq_w4a16/awq_gemm_N=5376,K=2048,device_name=BW200,dtype=w4a16,group_size=32.json
-@@ -0,0 +1,162 @@
+@@ -0,0 +1,1133 @@
 +{
 +  "1": {
 +    "USE_REDUCE_KERNEL": false,
@@ -1513,19 +4840,20 @@
 +    ]
 +  },
 +  "8": {
-+    "USE_REDUCE_KERNEL": false,
-+    "NUM_CUS": 80,
-+    "SCHEDULER": 0,
 +    "BLOCK_SIZE_M": 16,
 +    "BLOCK_SIZE_N": 64,
 +    "BLOCK_SIZE_K": 32,
-+    "SPLITK": 2,
++    "SPLITK": 4,
++    "SCHEDULER": 0,
 +    "num_warps": 4,
 +    "num_ctas": 1,
 +    "num_stages": 1,
 +    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
 +    "DP_TILES": 0,
 +    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
 +    "D_DTYPE": 32,
 +    "D_SHAPE": [
 +      8,
@@ -1533,82 +4861,1052 @@
 +    ]
 +  },
 +  "16": {
-+    "USE_REDUCE_KERNEL": false,
-+    "NUM_CUS": 80,
-+    "SCHEDULER": 0,
 +    "BLOCK_SIZE_M": 16,
 +    "BLOCK_SIZE_N": 64,
 +    "BLOCK_SIZE_K": 32,
-+    "SPLITK": 2,
++    "SPLITK": 3,
++    "SCHEDULER": 0,
 +    "num_warps": 4,
 +    "num_ctas": 1,
 +    "num_stages": 1,
 +    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
 +    "DP_TILES": 0,
 +    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
 +    "D_DTYPE": 32,
 +    "D_SHAPE": [
 +      16,
 +      5376
 +    ]
 +  },
-+  "32": {
-+    "USE_REDUCE_KERNEL": false,
-+    "NUM_CUS": 80,
-+    "SCHEDULER": 0,
-+    "BLOCK_SIZE_M": 16,
++  "24": {
++    "BLOCK_SIZE_M": 32,
 +    "BLOCK_SIZE_N": 64,
 +    "BLOCK_SIZE_K": 32,
-+    "SPLITK": 2,
++    "SPLITK": 4,
++    "SCHEDULER": 0,
 +    "num_warps": 4,
 +    "num_ctas": 1,
 +    "num_stages": 1,
 +    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
 +    "DP_TILES": 0,
 +    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      24,
++      5376
++    ]
++  },
++  "32": {
++    "BLOCK_SIZE_M": 32,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 4,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
 +    "D_DTYPE": 32,
 +    "D_SHAPE": [
 +      32,
 +      5376
 +    ]
 +  },
-+  "64": {
-+    "USE_REDUCE_KERNEL": false,
-+    "NUM_CUS": 80,
-+    "SCHEDULER": 0,
-+    "BLOCK_SIZE_M": 16,
++  "40": {
++    "BLOCK_SIZE_M": 32,
 +    "BLOCK_SIZE_N": 64,
 +    "BLOCK_SIZE_K": 32,
-+    "SPLITK": 2,
++    "SPLITK": 4,
++    "SCHEDULER": 0,
 +    "num_warps": 4,
 +    "num_ctas": 1,
 +    "num_stages": 1,
 +    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
 +    "DP_TILES": 0,
 +    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
 +    "D_DTYPE": 32,
++    "D_SHAPE": [
++      40,
++      5376
++    ]
++  },
++  "48": {
++    "BLOCK_SIZE_M": 32,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 4,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      48,
++      5376
++    ]
++  },
++  "56": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      56,
++      5376
++    ]
++  },
++  "64": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
 +    "D_SHAPE": [
 +      64,
 +      5376
 +    ]
 +  },
-+  "128": {
-+    "USE_REDUCE_KERNEL": false,
-+    "NUM_CUS": 80,
-+    "SCHEDULER": 0,
-+    "BLOCK_SIZE_M": 16,
++  "72": {
++    "BLOCK_SIZE_M": 64,
 +    "BLOCK_SIZE_N": 64,
 +    "BLOCK_SIZE_K": 32,
-+    "SPLITK": 2,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
 +    "num_warps": 4,
 +    "num_ctas": 1,
 +    "num_stages": 1,
 +    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
 +    "DP_TILES": 0,
 +    "DANGLING_TILES": 0,
-+    "D_DTYPE": 32,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      72,
++      5376
++    ]
++  },
++  "80": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      80,
++      5376
++    ]
++  },
++  "88": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      88,
++      5376
++    ]
++  },
++  "96": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      96,
++      5376
++    ]
++  },
++  "104": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      104,
++      5376
++    ]
++  },
++  "112": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      112,
++      5376
++    ]
++  },
++  "120": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      120,
++      5376
++    ]
++  },
++  "128": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
 +    "D_SHAPE": [
 +      128,
++      5376
++    ]
++  },
++  "136": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      136,
++      5376
++    ]
++  },
++  "144": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      144,
++      5376
++    ]
++  },
++  "152": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      152,
++      5376
++    ]
++  },
++  "160": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      160,
++      5376
++    ]
++  },
++  "168": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      168,
++      5376
++    ]
++  },
++  "176": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      176,
++      5376
++    ]
++  },
++  "184": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      184,
++      5376
++    ]
++  },
++  "192": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      192,
++      5376
++    ]
++  },
++  "200": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      200,
++      5376
++    ]
++  },
++  "208": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      208,
++      5376
++    ]
++  },
++  "216": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      216,
++      5376
++    ]
++  },
++  "224": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      224,
++      5376
++    ]
++  },
++  "232": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      232,
++      5376
++    ]
++  },
++  "240": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      240,
++      5376
++    ]
++  },
++  "248": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      248,
++      5376
++    ]
++  },
++  "256": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      256,
++      5376
++    ]
++  },
++  "272": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      272,
++      5376
++    ]
++  },
++  "288": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      288,
++      5376
++    ]
++  },
++  "304": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      304,
++      5376
++    ]
++  },
++  "320": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      320,
++      5376
++    ]
++  },
++  "336": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      336,
++      5376
++    ]
++  },
++  "352": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      352,
++      5376
++    ]
++  },
++  "368": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      368,
++      5376
++    ]
++  },
++  "384": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      384,
++      5376
++    ]
++  },
++  "400": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      400,
++      5376
++    ]
++  },
++  "416": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      416,
++      5376
++    ]
++  },
++  "432": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      432,
++      5376
++    ]
++  },
++  "448": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      448,
++      5376
++    ]
++  },
++  "464": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      464,
++      5376
++    ]
++  },
++  "480": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      480,
++      5376
++    ]
++  },
++  "496": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      496,
++      5376
++    ]
++  },
++  "512": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      512,
++      5376
++    ]
++  },
++  "1024": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      1024,
++      5376
++    ]
++  },
++  "2048": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      2048,
++      5376
++    ]
++  },
++  "4096": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      4096,
 +      5376
 +    ]
 +  }
@@ -1616,333 +5914,2281 @@
 \ No newline at end of file
 --- /dev/null
 +++ aiter/ops/triton/configs/gemm/awq_w4a16/awq_gemm_N=5376,K=4096,device_name=BW200,dtype=w4a16,group_size=32.json
-@@ -0,0 +1,162 @@
+@@ -0,0 +1,1136 @@
 +{
-+    "1": {
-+        "num_ctas": 1,
-+        "num_stages": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 16,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            1,
-+            5376
-+        ],
-+        "num_warps": 4
-+    },
-+    "2": {
-+        "num_ctas": 1,
-+        "num_stages": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 16,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            2,
-+            5376
-+        ],
-+        "num_warps": 4
-+    },
-+    "4": {
-+        "num_ctas": 1,
-+        "num_stages": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 8,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            4,
-+            5376
-+        ],
-+        "num_warps": 4
-+    },
-+    "8": {
-+        "num_ctas": 1,
-+        "num_stages": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 8,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            8,
-+            5376
-+        ],
-+        "num_warps": 4
-+    },
-+    "16": {
-+        "num_ctas": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 8,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            16,
-+            5376
-+        ]
-+    },
-+    "32": {
-+        "num_ctas": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 4,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            32,
-+            5376
-+        ]
-+    },
-+    "64": {
-+        "num_ctas": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 2,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            64,
-+            5376
-+        ]
-+    },
-+    "128": {
-+        "num_ctas": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 16,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 0,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 1,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            128,
-+            5376
-+        ]
-+    }
++  "1": {
++    "num_ctas": 1,
++    "num_stages": 1,
++    "USE_REDUCE_KERNEL": false,
++    "SCHEDULER": 0,
++    "BLOCK_SIZE_M": 16,
++    "D_DTYPE": 32,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "SPLITK": 16,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "NUM_GROUPS": 1,
++    "D_SHAPE": [
++      1,
++      5376
++    ],
++    "num_warps": 4
++  },
++  "2": {
++    "num_ctas": 1,
++    "num_stages": 1,
++    "USE_REDUCE_KERNEL": false,
++    "SCHEDULER": 0,
++    "BLOCK_SIZE_M": 16,
++    "D_DTYPE": 32,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "SPLITK": 16,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "NUM_GROUPS": 1,
++    "D_SHAPE": [
++      2,
++      5376
++    ],
++    "num_warps": 4
++  },
++  "4": {
++    "num_ctas": 1,
++    "num_stages": 1,
++    "USE_REDUCE_KERNEL": false,
++    "SCHEDULER": 0,
++    "BLOCK_SIZE_M": 16,
++    "D_DTYPE": 32,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "SPLITK": 8,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "NUM_GROUPS": 1,
++    "D_SHAPE": [
++      4,
++      5376
++    ],
++    "num_warps": 4
++  },
++  "8": {
++    "BLOCK_SIZE_M": 16,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 8,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      8,
++      5376
++    ]
++  },
++  "16": {
++    "BLOCK_SIZE_M": 16,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 8,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      16,
++      5376
++    ]
++  },
++  "24": {
++    "BLOCK_SIZE_M": 32,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 4,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      24,
++      5376
++    ]
++  },
++  "32": {
++    "BLOCK_SIZE_M": 32,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 4,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      32,
++      5376
++    ]
++  },
++  "40": {
++    "BLOCK_SIZE_M": 32,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 4,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      40,
++      5376
++    ]
++  },
++  "48": {
++    "BLOCK_SIZE_M": 32,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 4,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      48,
++      5376
++    ]
++  },
++  "56": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 2,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      56,
++      5376
++    ]
++  },
++  "64": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 2,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      64,
++      5376
++    ]
++  },
++  "72": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 2,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      72,
++      5376
++    ]
++  },
++  "80": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 2,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      80,
++      5376
++    ]
++  },
++  "88": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 2,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      88,
++      5376
++    ]
++  },
++  "96": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 2,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      96,
++      5376
++    ]
++  },
++  "104": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      104,
++      5376
++    ]
++  },
++  "112": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      112,
++      5376
++    ]
++  },
++  "120": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      120,
++      5376
++    ]
++  },
++  "128": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      128,
++      5376
++    ]
++  },
++  "136": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      136,
++      5376
++    ]
++  },
++  "144": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      144,
++      5376
++    ]
++  },
++  "152": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      152,
++      5376
++    ]
++  },
++  "160": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      160,
++      5376
++    ]
++  },
++  "168": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      168,
++      5376
++    ]
++  },
++  "176": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      176,
++      5376
++    ]
++  },
++  "184": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      184,
++      5376
++    ]
++  },
++  "192": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      192,
++      5376
++    ]
++  },
++  "200": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      200,
++      5376
++    ]
++  },
++  "208": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      208,
++      5376
++    ]
++  },
++  "216": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      216,
++      5376
++    ]
++  },
++  "224": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      224,
++      5376
++    ]
++  },
++  "232": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      232,
++      5376
++    ]
++  },
++  "240": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      240,
++      5376
++    ]
++  },
++  "248": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      248,
++      5376
++    ]
++  },
++  "256": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      256,
++      5376
++    ]
++  },
++  "272": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      272,
++      5376
++    ]
++  },
++  "288": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      288,
++      5376
++    ]
++  },
++  "304": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      304,
++      5376
++    ]
++  },
++  "320": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      320,
++      5376
++    ]
++  },
++  "336": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      336,
++      5376
++    ]
++  },
++  "352": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      352,
++      5376
++    ]
++  },
++  "368": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      368,
++      5376
++    ]
++  },
++  "384": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      384,
++      5376
++    ]
++  },
++  "400": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      400,
++      5376
++    ]
++  },
++  "416": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      416,
++      5376
++    ]
++  },
++  "432": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      432,
++      5376
++    ]
++  },
++  "448": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      448,
++      5376
++    ]
++  },
++  "464": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      464,
++      5376
++    ]
++  },
++  "480": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      480,
++      5376
++    ]
++  },
++  "496": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      496,
++      5376
++    ]
++  },
++  "512": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      512,
++      5376
++    ]
++  },
++  "1024": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      1024,
++      5376
++    ]
++  },
++  "2048": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      2048,
++      5376
++    ]
++  },
++  "4096": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      4096,
++      5376
++    ]
++  }
 +}
 \ No newline at end of file
 --- /dev/null
 +++ aiter/ops/triton/configs/gemm/awq_w4a16/awq_gemm_N=5376,K=5376,device_name=BW200,dtype=w4a16,group_size=32.json
-@@ -0,0 +1,162 @@
+@@ -0,0 +1,1136 @@
 +{
-+    "1": {
-+        "num_ctas": 1,
-+        "num_stages": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 16,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            1,
-+            5376
-+        ],
-+        "num_warps": 4
-+    },
-+    "2": {
-+        "num_ctas": 1,
-+        "num_stages": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 8,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            2,
-+            5376
-+        ],
-+        "num_warps": 4
-+    },
-+    "4": {
-+        "num_ctas": 1,
-+        "num_stages": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 8,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            4,
-+            5376
-+        ],
-+        "num_warps": 4
-+    },
-+    "8": {
-+        "num_ctas": 1,
-+        "num_stages": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 8,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            8,
-+            5376
-+        ],
-+        "num_warps": 4
-+    },
-+    "16": {
-+        "num_ctas": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 8,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            16,
-+            5376
-+        ]
-+    },
-+    "32": {
-+        "num_ctas": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 4,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            32,
-+            5376
-+        ]
-+    },
-+    "64": {
-+        "num_ctas": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 32,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 48,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 4,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            64,
-+            5376
-+        ]
-+    },
-+    "128": {
-+        "num_ctas": 1,
-+        "USE_REDUCE_KERNEL": false,
-+        "SCHEDULER": 0,
-+        "BLOCK_SIZE_M": 16,
-+        "D_DTYPE": 16,
-+        "DP_TILES": 0,
-+        "DANGLING_TILES": 0,
-+        "NUM_CUS": 0,
-+        "NUM_CUS_STREAMK": 0,
-+        "SPLITK": 1,
-+        "BLOCK_SIZE_N": 128,
-+        "BLOCK_SIZE_K": 32,
-+        "NUM_GROUPS": 1,
-+        "D_SHAPE": [
-+            128,
-+            5376
-+        ]
-+    }
++  "1": {
++    "num_ctas": 1,
++    "num_stages": 1,
++    "USE_REDUCE_KERNEL": false,
++    "SCHEDULER": 0,
++    "BLOCK_SIZE_M": 16,
++    "D_DTYPE": 32,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "SPLITK": 16,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "NUM_GROUPS": 1,
++    "D_SHAPE": [
++      1,
++      5376
++    ],
++    "num_warps": 4
++  },
++  "2": {
++    "num_ctas": 1,
++    "num_stages": 1,
++    "USE_REDUCE_KERNEL": false,
++    "SCHEDULER": 0,
++    "BLOCK_SIZE_M": 16,
++    "D_DTYPE": 32,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "SPLITK": 8,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "NUM_GROUPS": 1,
++    "D_SHAPE": [
++      2,
++      5376
++    ],
++    "num_warps": 4
++  },
++  "4": {
++    "num_ctas": 1,
++    "num_stages": 1,
++    "USE_REDUCE_KERNEL": false,
++    "SCHEDULER": 0,
++    "BLOCK_SIZE_M": 16,
++    "D_DTYPE": 32,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "SPLITK": 8,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "NUM_GROUPS": 1,
++    "D_SHAPE": [
++      4,
++      5376
++    ],
++    "num_warps": 4
++  },
++  "8": {
++    "BLOCK_SIZE_M": 16,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 8,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      8,
++      5376
++    ]
++  },
++  "16": {
++    "BLOCK_SIZE_M": 16,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 8,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      16,
++      5376
++    ]
++  },
++  "24": {
++    "BLOCK_SIZE_M": 32,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 4,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      24,
++      5376
++    ]
++  },
++  "32": {
++    "BLOCK_SIZE_M": 32,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 4,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      32,
++      5376
++    ]
++  },
++  "40": {
++    "BLOCK_SIZE_M": 32,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 4,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      40,
++      5376
++    ]
++  },
++  "48": {
++    "BLOCK_SIZE_M": 32,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 4,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      48,
++      5376
++    ]
++  },
++  "56": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 2,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      56,
++      5376
++    ]
++  },
++  "64": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 2,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      64,
++      5376
++    ]
++  },
++  "72": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 2,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      72,
++      5376
++    ]
++  },
++  "80": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 2,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      80,
++      5376
++    ]
++  },
++  "88": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 2,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      88,
++      5376
++    ]
++  },
++  "96": {
++    "BLOCK_SIZE_M": 64,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 2,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 32,
++    "D_SHAPE": [
++      96,
++      5376
++    ]
++  },
++  "104": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      104,
++      5376
++    ]
++  },
++  "112": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      112,
++      5376
++    ]
++  },
++  "120": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      120,
++      5376
++    ]
++  },
++  "128": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      128,
++      5376
++    ]
++  },
++  "136": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      136,
++      5376
++    ]
++  },
++  "144": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      144,
++      5376
++    ]
++  },
++  "152": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      152,
++      5376
++    ]
++  },
++  "160": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      160,
++      5376
++    ]
++  },
++  "168": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      168,
++      5376
++    ]
++  },
++  "176": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      176,
++      5376
++    ]
++  },
++  "184": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      184,
++      5376
++    ]
++  },
++  "192": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 64,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 8,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      192,
++      5376
++    ]
++  },
++  "200": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      200,
++      5376
++    ]
++  },
++  "208": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      208,
++      5376
++    ]
++  },
++  "216": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      216,
++      5376
++    ]
++  },
++  "224": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      224,
++      5376
++    ]
++  },
++  "232": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      232,
++      5376
++    ]
++  },
++  "240": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      240,
++      5376
++    ]
++  },
++  "248": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      248,
++      5376
++    ]
++  },
++  "256": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      256,
++      5376
++    ]
++  },
++  "272": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      272,
++      5376
++    ]
++  },
++  "288": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      288,
++      5376
++    ]
++  },
++  "304": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      304,
++      5376
++    ]
++  },
++  "320": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      320,
++      5376
++    ]
++  },
++  "336": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      336,
++      5376
++    ]
++  },
++  "352": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      352,
++      5376
++    ]
++  },
++  "368": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      368,
++      5376
++    ]
++  },
++  "384": {
++    "BLOCK_SIZE_M": 128,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      384,
++      5376
++    ]
++  },
++  "400": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      400,
++      5376
++    ]
++  },
++  "416": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      416,
++      5376
++    ]
++  },
++  "432": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      432,
++      5376
++    ]
++  },
++  "448": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      448,
++      5376
++    ]
++  },
++  "464": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      464,
++      5376
++    ]
++  },
++  "480": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      480,
++      5376
++    ]
++  },
++  "496": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      496,
++      5376
++    ]
++  },
++  "512": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      512,
++      5376
++    ]
++  },
++  "1024": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      1024,
++      5376
++    ]
++  },
++  "2048": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      2048,
++      5376
++    ]
++  },
++  "4096": {
++    "BLOCK_SIZE_M": 256,
++    "BLOCK_SIZE_N": 128,
++    "BLOCK_SIZE_K": 32,
++    "SPLITK": 1,
++    "SCHEDULER": 0,
++    "num_warps": 4,
++    "num_ctas": 1,
++    "num_stages": 1,
++    "NUM_GROUPS": 1,
++    "NUM_CUS": 48,
++    "NUM_CUS_STREAMK": 0,
++    "DP_TILES": 0,
++    "DANGLING_TILES": 0,
++    "USE_REDUCE_KERNEL": false,
++    "D_DTYPE": 16,
++    "D_SHAPE": [
++      4096,
++      5376
++    ]
++  }
 +}
 \ No newline at end of file

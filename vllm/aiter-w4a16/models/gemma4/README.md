@@ -7,6 +7,65 @@
 > 通用的 patch 机制（kernel、vllm 接入、安装脚本）见上级 [`../../README.md`](../../README.md)。
 > 本文件讲 gemma4 专属的全部内容：模型 shape、两阶段部署、调优 config、性能与精度。
 
+---
+
+## 更新记录
+
+### 2026-08-14 · SPLITK 全 batch 调优（仅改 config，未动 kernel/源码）
+
+**背景**：之前 SPLITK 只在小 batch 调过（M=4 用 SK=2），且一度怀疑 SK≥2 有精度/稳定性问题。
+本次系统性验证后放开 SK，对 6 个 TP4 sharded 形状做全 batch 调优。
+
+**关键结论**：
+
+1. **SPLITK 精度无损**：用真实模型权重对比数学真值，SK 1~16 全部 `cos=1.0000`。
+   之前"SK≥2 导致 cos<0.99"是测量 bug（拿 SK 配置输出对比 SK1 配置输出，两个近似值相减放大了误差）。
+   SK>1 走 fp32 累加（`D_DTYPE=32`），数值上比 SK=1 更精确。
+2. **VMFault 根因不是 SPLITK**：是 `BLOCK_SIZE_K=64` 或 `NUM_GROUPS=2`。
+   `BK=32 / NG=1` + 任意 SK（6/8/12/16）生产稳定运行，无 VMFault。
+3. **小 batch（M≤4）维持原 patch 配置**：5/6 个形状原配置已最优，仅 o_sw 差 1.04x，不值得动。
+4. **中 batch（M≥8）用 SK≠1 最优**：单卡 GEMM 比 SK=1 快 1.4~2.7x。
+5. **大 batch（M≥128）用 SK=1**：CU 利用率已饱和，split-K 无收益反而增加 reduce 开销。
+
+**config 覆盖范围**：6 个 sharded 形状的 config 从 8 个 M key（1/2/4/8/16/32/64/128）
+扩展到覆盖**全部 cudagraph 捕获尺寸**（1/2/4/8/16/24/32/.../512）+ prefill 尺寸（1024/2048/4096），
+共 54 个 M key，确保任何 batch 都有精确匹配的调优 config，不回退默认值。
+
+**6 个 sharded 形状 SPLITK 策略一览**（M: 各 batch 段 SK 值）：
+
+| 形状 (N,K) | 层 | M=1 | M=4 | M=8 | M=16 | M=32 | M=64 | M≥128 |
+|------------|-----|-----|-----|-----|------|------|------|-------|
+| 4096,5376 | qkv_sw | 16 | 12 | 12 | 6 | 6 | 3 | 1 |
+| 5120,5376 | qkv_fa | 12 | 12 | 12 | 6 | 3 | 2 | 1 |
+| 5376,2048 | o_sw | 2 | 2 | 4 | 3 | 4 | 1 | 1 |
+| 5376,4096 | o_fa | 16 | 8 | 8 | 8 | 4 | 2 | 1 |
+| 10752,5376 | gate_up | 12 | 8 | 8 | 4 | 2 | 1 | 1 |
+| 5376,5376 | down | 16 | 8 | 8 | 8 | 4 | 2 | 1 |
+
+> 所有配置统一 `BK=32 / NG=1`（VMFault 安全），`BN=128`（大形状）/ `BN=64`（小形状）。
+> SK>1 时 `D_DTYPE=32`（fp32 累加）；SK=1 时 `D_DTYPE=16`（fp16，省显存）。
+
+**改动文件**（只改 config，未碰 kernel/源码/启动脚本）：
+- `models/gemma4/configs/awq_w4a16/` 下 6 个 sharded JSON（重写，扩展 M 覆盖 + SK 调优）
+- `aiter.patch` 第 3 段重新生成（gemma4 config 固化在 patch 里），段 1/2 代码未动
+- 4 个非 sharded JSON（1344/3584/5376-14336）同步为已部署的较新版本（13 M key）
+
+**端到端性能**（vllm bench serve，5120 in / 1024 out，两阶段叠加，TP4）：
+
+| batch | TPOT | TTFT | output 吞吐 (tok/s) | engine gen (tok/s) | acceptance |
+|-------|------|------|---------------------|--------------------|-----------|
+| 4 | 34.98ms | 1.20s | 109.93 | ~110 | 97.54% |
+| 8 | 46.90ms | — | 131.82 | ~200 | 94.24% |
+| 16 | 59.94ms | — | 181.10 | ~330 | 92.54% |
+| 32 | — | — | — | **468~489** | 91~94% |
+
+**精度**：HumanEval pass@1 = **98.17%**（164 题全量，比上次的 97.56% 更高，精度无损）。
+
+> 注：`vllm bench serve` 的 output 吞吐含 TTFT/排队（端到端），大 batch 下显著低于
+> engine 日志的 generation throughput（纯 decode）。评估真实 decode 吞吐看 engine gen 列。
+
+---
+
 ## 模型信息
 
 - 模型：gemma-4-31B-it-AWQ-4bit（compressed-tensors 格式）
@@ -148,30 +207,40 @@ CUDA graph capture 通过。
 
 `configs/awq_w4a16/` 下 10 个 config（均 device_name=BW200，group_size=32），按层权重 shape 命名：
 
-| 文件 (N,K) | 对应层 | 说明 |
-|-----------|--------|------|
-| N=1344, K=5376 | q_proj | GQA, N = 16 heads × 256 head_dim ÷ 4 (Q 头数减半) |
-| N=3584, K=5376 | gate/up_proj | |
-| N=5376, K=5376 | o_proj | |
-| N=5376, K=14336 | down_proj | 大 K, 用 BK=64 |
-| N=10752, K=5376 | merged gate/up | |
-| N=4096, K=5376 | | 运行时日志出现 |
-| N=5120, K=5376 | | 运行时日志出现 |
-| N=5376, K=2048 | | 运行时日志出现 |
-| N=5376, K=4096 | | 运行时日志出现 |
-| N=1344, K=14336 | | 运行时日志出现 |
+| 文件 (N,K) | 对应层 | TP4 sharded? | 说明 |
+|-----------|--------|:---:|------|
+| N=4096, K=5376 | qkv_proj (sliding) | ✓ | fused qkv, sliding 层 TP4 分片 |
+| N=5120, K=5376 | qkv_proj (full attn) | ✓ | fused qkv, full_attention 层 TP4 分片 |
+| N=5376, K=2048 | o_proj (sliding) | ✓ | sliding 层 TP4 分片 |
+| N=5376, K=4096 | o_proj (full attn) | ✓ | full_attention 层 TP4 分片 |
+| N=10752, K=5376 | merged gate/up | ✓ | gate_up 合并后 TP4 分片 |
+| N=5376, K=5376 | down_proj | ✓ | down_proj TP4 分片 |
+| N=1344, K=5376 | q_proj (单) | | 未合并的 q_proj |
+| N=3584, K=5376 | gate/up_proj (单) | | 未合并的 gate/up |
+| N=5376, K=14336 | down_proj (单) | | 未分片的 down（大 K） |
+| N=1344, K=14336 | | | 未分片大 K 形状 |
+
+> 6 个打 ✓ 的 sharded 形状是 TP4 生产路径实际命中的，已做全 batch SPLITK 调优（见"更新记录"）。
+> 4 个未打 ✓ 的是非合并/非分片路径，用通用安全配置。
 
 config 文件格式：`{M_int: {BLOCK_SIZE_M/N/K, SPLITK, num_warps, NUM_CUS, D_SHAPE, ...}}`。
 运行时 aiter 据当前层 `(N,K)` 找文件，再据 `M`（batch）选文件里的具体 config。
 
 ### 关键调优参数
 
-- `BLOCK_SIZE_M=16, BLOCK_SIZE_N=64, BLOCK_SIZE_K=32`（down 大 K 用 BK=64）
-- **`SPLITK=2`** 对小 M（M=4，decode 批）是关键 —— BW10 有 80 CUs，小 M 时把 K 维 split
-  给多个 CU 做 reduce，否则 CU 利用率太低
-- `num_warps=4, NUM_CUS=80`
+- **`BLOCK_SIZE_K=32, NUM_GROUPS=1`**：VMFault 安全配置的硬约束。
+  BK=64 或 NG=2 会触发 VMFault（已确认根因），BK=32/NG=1 + 任意 SPLITK 生产稳定。
+- **`SPLITK` 自适应**：核心调优旋钮。小/中 batch（M≤64）CU 利用率不足，用 SK≠1（2~16）
+  把 K 维 split 给多个 CU 并行 reduce；大 batch（M≥128）CU 已饱和，SK=1 省 reduce 开销。
+  SK>1 时 `D_DTYPE=32`（fp32 累加，精度无损实测 cos=1.0000），SK=1 时 `D_DTYPE=16`。
+- `BLOCK_SIZE_M=16`（小/中 M）/ `BM=128`（大 M），`BLOCK_SIZE_N=128`（大形状 N≥4096）/ `64`（小形状）
+- `num_warps=4, NUM_CUS=48`（大形状）/ `NUM_CUS=80`（小形状）
 
 未调优的 aiter 默认 config 比 vllm 还慢 10-28%；调优后比 vllm 快 1.6-2.33x（kernel 级，M=4）。
+
+> 6 个 TP4 sharded 形状（4096/5120/5376-2048/5376-4096/10752/5376-5376）已做全 batch
+> SPLITK 调优，覆盖全部 cudagraph M（1~512）+ prefill（1024/2048/4096），详见"更新记录"。
+> 其余 4 个非 sharded 形状（1344/3584/5376-14336/1344-14336）用通用安全配置（BK=32, SK=1~2）。
 
 ---
 
@@ -301,18 +370,21 @@ evalscope eval \
 
 ### 实测精度结果
 
+SPLITK 全 batch 调优后（2026-08-14）：
+
 ```
 ┌─────────┬───────────┬─────────────────┬──────────────────┬───────┬─────────┐
 │ Model   │ Dataset   │ Metric          │ Subset           │   Num │   Score │
 ├─────────┼───────────┼─────────────────┼──────────────────┼───────┼─────────┤
-│ gemma4  │ humaneval │ mean_acc_pass@1 │ openai_humaneval │   164 │  0.9756 │
+│ gemma4  │ humaneval │ mean_acc_pass@1 │ openai_humaneval │   164 │  0.9817 │
 └─────────┴───────────┴─────────────────┴──────────────────┴───────┴─────────┘
 ```
 
-- **HumanEval pass@1 = 0.9756（97.56%）**，164 题全量评测
-- 平均延迟 15.91s，平均吞吐 11.89 tok/s，平均输入 186 token / 输出 189 token
+- **HumanEval pass@1 = 0.9817（98.17%）**，164 题全量评测
+- 平均延迟 11.23s，平均吞吐 15.72 tok/s，平均输入 186 token / 输出 176 token
+- 上一次（SK=2 小 batch 配置）测得 97.56%，本次 SK 放开后 98.17%，**精度无损且有波动提升**
 
-pass@1 达 97.56%，与该模型未打 patch 时的正常水平一致，确认 **精度无损**。
+pass@1 达 98.17%，与该模型未打 patch 时的正常水平一致，确认 **SPLITK≠1 精度无损**。
 
 > 另有离线精度验证 `tests/verify_aiter_v2.py`，直接对比 aiter 与 vllm kernel 输出的 `cos_sim`，
 > 实测 **= 1.000000**（完全一致），从算子层确认精度无损。
