@@ -24,8 +24,12 @@
 2. **VMFault 根因不是 SPLITK**：是 `BLOCK_SIZE_K=64` 或 `NUM_GROUPS=2`。
    `BK=32 / NG=1` + 任意 SK（6/8/12/16）生产稳定运行，无 VMFault。
 3. **小 batch（M≤4）维持原 patch 配置**：5/6 个形状原配置已最优，仅 o_sw 差 1.04x，不值得动。
-4. **中 batch（M≥8）用 SK≠1 最优**：单卡 GEMM 比 SK=1 快 1.4~2.7x。
+4. **中 batch（M≥8）用 SK≠1 最优**：单卡 GEMM 比 SK=1 快 1.4~2.7x → **decode 吞吐提升**。
 5. **大 batch（M≥128）用 SK=1**：CU 利用率已饱和，split-K 无收益反而增加 reduce 开销。
+6. **TTFT 优化 = prefill 段大 M config 调优**：TTFT 由 prefill 时间决定，prefill 阶段 M = 输入 token 数
+   （1024~4096+），是 GEMM 密集型。本次为大 M（M=256~4096）精测出 `BM256 BN128 SK1 DD16` 配置
+   （tile 数少、compute 密度高），比上次的 BM128 版本更优 → **prefill 加速 → TTFT 降低**。
+   注：此前版本 config 只覆盖到 M=128，M>128 回退 BM16 导致 prefill 慢 2.5x，是 TTFT 高的根因。
 
 **config 覆盖范围**：6 个 sharded 形状的 config 从 8 个 M key（1/2/4/8/16/32/64/128）
 扩展到覆盖**全部 cudagraph 捕获尺寸**（1/2/4/8/16/24/32/.../512）+ prefill 尺寸（1024/2048/4096），
@@ -233,8 +237,13 @@ config 文件格式：`{M_int: {BLOCK_SIZE_M/N/K, SPLITK, num_warps, NUM_CUS, D_
 - **`SPLITK` 自适应**：核心调优旋钮。小/中 batch（M≤64）CU 利用率不足，用 SK≠1（2~16）
   把 K 维 split 给多个 CU 并行 reduce；大 batch（M≥128）CU 已饱和，SK=1 省 reduce 开销。
   SK>1 时 `D_DTYPE=32`（fp32 累加，精度无损实测 cos=1.0000），SK=1 时 `D_DTYPE=16`。
-- `BLOCK_SIZE_M=16`（小/中 M）/ `BM=128`（大 M），`BLOCK_SIZE_N=128`（大形状 N≥4096）/ `64`（小形状）
+- `BLOCK_SIZE_M=16`（小/中 M decode）/ `BM=256`（大 M prefill，TTFT 关键），`BLOCK_SIZE_N=128`（大形状 N≥4096）/ `64`（小形状）
 - `num_warps=4, NUM_CUS=48`（大形状）/ `NUM_CUS=80`（小形状）
+
+> **TTFT 与 decode 分别由不同 M 段的 config 决定**：
+> - **TTFT**（prefill）：大 M（256~4096）config → `BM256 BN128 SK1 DD16`，prefill GEMM 加速
+> - **decode 吞吐**：小/中 M（1~64）config → `SK≠1`（2~12）增并行，GEMM 快 1.4~2.7x
+> 两者都在本次 aiter.patch 的 config 里，一个 patch 同时覆盖。
 
 未调优的 aiter 默认 config 比 vllm 还慢 10-28%；调优后比 vllm 快 1.6-2.33x（kernel 级，M=4）。
 
