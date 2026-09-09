@@ -374,7 +374,7 @@ vllm::norm_and_quant<...>(out, input, weight, rms, &token_scale, ..., residual);
 **GEMM 优化空间分三段**（6.9.5 细粒度扫描后修正）：
 
 - **M≤16**：已近峰值（75-83%），无空间。
-- **M=17~64**：**有空间**——68% 平台是 kernel tile 配置问题（非物理墙，AI 远低于脊点），库内 algo 枚举无解，需算子团队重调 tile/CTA 或专用 kernel（目标 ≥80%，~1.2x，已提优化单）。decode batch=32/64 正落在此区间。
+- **M=17~64**：**有空间**——68% 平台是 kernel tile 配置问题（非物理墙，AI 远低于脊点），库内 algo 枚举无解，需算子团队重调 tile/CTA 或专用 kernel（目标 ~78%，对齐 M≤16 的 layer 利用率，~1.1x，已提优化单）。decode batch=32/64 正落在此区间。
 - **M≥80**：混合区→算力墙（M=128 已到脊点 248，M=4096 饱和 447 TFLOPS），split-K 无收益（6.9.3），无空间。
 
 除 GEMM 外，decode 提速还可从**非 GEMM 部分**（Attention 随 batch 线性增长、Quant-Norm 已接近下限）或**减少 GEMM FLOPs/权重读取**（更狠量化，但用户要求无损，排除）下手。
@@ -413,7 +413,7 @@ vllm::norm_and_quant<...>(out, input, weight, rms, &token_scale, ..., residual);
 1. **拐点在 M=17，不是 M=32**：M=16→17 单点跳 +40.5us（177→218us，利用率 82.7%→67.3%），M=17~64 整个平台卡在 ~218us/67-68%（中间 ±15us 抖动是测量噪声，无趋势）。6.9.1 表里"看起来 M=32 下降"是扫描点粗 + gate+up 主导 layer 时间的假象。
 2. **M=17~64 平台是 kernel 效率损失，不是物理墙**：M=16 和 M=64 读**同一份 262MB 权重**，M=64 的 AI=125 只有脊点（447.3 TFLOPS / 1.8 TB/s = **248 FLOP/byte**）的一半，理论上应与 M=16 同为纯权重读取瓶颈（~83%），实际慢 22%。
 3. **第二个台阶在 M=80**（+80.6us，218→300us），M=80~128 平台 ~300us/50%；M=128 的 AI=243 ≈ 脊点，此后进入混合区→算力受限（M=4096 饱和 447 TFLOPS），属正常。
-4. **库内 algo 枚举救不了**（6.9.3 已验证）：M=32/64 最佳 algo 与生产路径持平（1.00x）→ 需要算子团队针对 M=17~64 重调 tile/CTA 配置或写专用 kernel（已提优化单，目标 68%→≥80%，~1.2x）。
+4. **库内 algo 枚举救不了**（6.9.3 已验证）：M=32/64 最佳 algo 与生产路径持平（1.00x）→ 需要算子团队针对 M=17~64 重调 tile/CTA 配置或写专用 kernel（已提优化单，目标 68%→~78%，~1.1x）。
 
 ## 6.10 FP8 优化累计收益汇总
 
@@ -428,7 +428,7 @@ vllm::norm_and_quant<...>(out, input, weight, rms, &token_scale, ..., residual);
 
 **未计入的潜在收益**（已定位、未落地）：
 
-- GEMM M=17~64 tile 优化（§6.9.1 实测 68% → 80% BW，~1.2x，已提算子优化单）；
+- GEMM M=17~64 tile 优化（§6.9.5 实测 68% → ~78% BW，~1.1x，已提算子优化单）；
 - Attention int4 KV（batch=128 时 20ms → ~10ms，但**有损**，当前要求无损故未做）；
 - Quant/SiLU 融合进 GEMM epilogue（~2-4ms/step）。
 
