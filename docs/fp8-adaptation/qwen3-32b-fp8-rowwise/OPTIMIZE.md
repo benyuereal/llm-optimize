@@ -375,6 +375,23 @@ vllm::norm_and_quant<...>(out, input, weight, rms, &token_scale, ..., residual);
 
 > 注：`/workspace/_src` 下 8 个源树（blockwise_w8a8_asm / ck_upstream / DeepGEMM / flash-attention-cutlass / hipBLASLt / lightop-master / tilelang / vllm）评估结论——只有 **hipBLASLt** 有现成可用的 fp8 split-K 入口（已验证，无收益）；ck_upstream 的 fp8 MFMA 只 gate 在 gfx942/950（不含 gfx938）；lightop-master 的 dense `.co` 全是 int8、smooth 路径 M≤16；DeepGEMM 是 CUDA-only。
 
+## 6.10 FP8 优化累计收益汇总
+
+> 注意：三项优化在**不同压测条件**下分别实测（custom_ops 为 16 并发，DP4/TP4 为 256 并发，fused 采样为 profiler 单 step），**不能直接相乘**；"累计"列按 TPOT 叠加估算，供量级参考。
+
+| # | 优化项 | 改动 | 实测收益 | 测试条件 |
+|---|---|---|---|---|
+| 1 | 激活量化融合（custom_ops ON） | 启动参数 `--compilation-config '{"custom_ops": ["+quant_fp8", "+rms_norm", "+silu_and_mul"]}'`，量化走 lightop HCU 内核（171.9us → ~7us，~25x） | 吞吐 **+31%**，TPOT **−24%**（42.43 → 32.17ms） | 16 并发 × 512 输出，A/B 服务器 8001 vs 8005 |
+| 2 | 并行策略 DP4（替代 TP4） | `--data-parallel-size 4 --tensor-parallel-size 1`，消除每层 2 次 AllReduce（占 TP4 GPU 时间 33.9%） | TPOT **−24%**（69.96 → 53.54ms），吞吐 **+18%**（9630 → 11363 tok/s） | 4 卡，256 并发 × 512 输出 |
+| 3 | fused top-k+top-p 采样 kernel | `vllm/v1/sample/ops/fused_topk_topp.py`（torch.topk(1024) + 单 triton kernel，严格复刻 triton 语义） | 采样 **~10ms → 0.955ms/step（4.3x）**，45/45 正确性通过 | profiler 单 step，尖峰分布 |
+| — | **累计（TPOT 叠加估算）** | | TPOT **~70ms → ~40ms（约 1.75x）**；256 并发吞吐 9630 → ~13000+ tok/s | 估算值，非单次实测 |
+
+**未计入的潜在收益**（已定位、未落地）：
+
+- GEMM M=17~64 tile 优化（§6.9.1 实测 68% → 80% BW，~1.2x，已提算子优化单）；
+- Attention int4 KV（batch=128 时 20ms → ~10ms，但**有损**，当前要求无损故未做）；
+- Quant/SiLU 融合进 GEMM epilogue（~2-4ms/step）。
+
 ## 7. 结论与落地建议
 
 1. **量化**：Qwen3-32B → FP8 rowwise（per-channel 权重 + per-token 动态激活，W8A8）产物 `/models/Qwen3-32B-FP8-ROWWISE/` 可用，W8A8 是本平台正确选择。
