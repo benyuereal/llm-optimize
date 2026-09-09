@@ -429,8 +429,48 @@ vllm::norm_and_quant<...>(out, input, weight, rms, &token_scale, ..., residual);
 **未计入的潜在收益**（已定位、未落地）：
 
 - GEMM M=17~64 tile 优化（§6.9.5 实测 68% → ~78% BW，~1.1x，已提算子优化单）；
-- Attention int4 KV（batch=128 时 20ms → ~10ms，但**有损**，当前要求无损故未做）；
-- Quant/SiLU 融合进 GEMM epilogue（~2-4ms/step）。
+- Attention int4 KV（batch=128 时 20ms → ~10ms，但**有损**，当前要求无损故未做）。
+
+（Quant/SiLU 融合进 GEMM epilogue 曾列为候选，§6.8.3 已确认 DTK 闭源 kernel 不可行，排除。）
+
+## 6.11 batch=64 现状耗时分布与无损优化空间（2026-09-09 估算）
+
+> batch=64 无直接 profiler trace，按 GEMM 实测值（§6.9.1 M=64 行）+ 其他项在 batch=16/128 实测间线性插值估算。DP1 单卡。
+
+### 6.11.1 耗时分布估算（~50ms/step）
+
+| 类别 | batch=16 实测 | **batch=64 估算** | batch=128 实测 | 估算依据 |
+|---|---|---|---|---|
+| GEMM | 22.78ms | **~29.9ms (60%)** | 40.64ms | M=64 layer 实测 0.458ms × 64 层 + LM head ~0.6ms |
+| Attention | 3.79ms | **~10ms (20%)** | 20.0ms | 随 M 近线性（KV 每序列独立读） |
+| Quant/SiLU | 2.53ms | **~4.5ms (9%)** | 9.44ms | 线性插值 |
+| Norm | 2.52ms | **~4ms (8%)** | 7.23ms | 线性插值 |
+| KV write | 0.39ms | **~0.8ms (2%)** | 1.49ms | 线性插值 |
+| 采样 (fused) | — | **~1ms** | — | fused kernel 已优化 |
+| **合计** | 43.8ms | **~50ms** | 78.8ms | |
+
+### 6.11.2 当前带宽利用率（M=64，真实权重实测，§6.9.1）
+
+| GEMM | 耗时/层 | 带宽利用率 |
+|---|---|---|
+| QKV (10240×5120) | 56.0us | 54% |
+| O (5120×8192) | 50.7us | 47% |
+| gate+up (51200×5120) | 218.4us | **68%** |
+| down (5120×25600) | 133.0us | 56% |
+| **layer 合计** | **0.458ms** | **60.6%（1091 GB/s / 1.8 TB/s）** |
+
+对比：M=16 时 layer 利用率 76.3%（1373 GB/s）——**M=64 比 M=16 低 15.7 个百分点**，即 M=17~64 tile 退化平台（§6.9.5）的直接代价。
+
+### 6.11.3 无损优化空间
+
+| 项 | 空间 | 说明 |
+|---|---|---|
+| **GEMM M=17~64 tile**（已提单） | **−1.7ms（保守）~ −6.4ms（乐观）** | 保守 = ticket 口径 gate+up 68%→78%（218→192us/层）；乐观 = M=64 全部退化 GEMM 恢复到 M=16 效率（gate+up 218→177、down 133→79、QKV 56→51us，合计 −100us/层 × 64） |
+| Attention | 0 | combine 去不掉（smem 限制）；int4 KV 有损，不计入无损空间 |
+| Quant/Norm/SiLU | 0 | A/B 融合已生效、接近下限；attn→O 独立 quant 结构性融不掉 |
+| 采样 | 0 | fused 已做（10ms→0.955ms） |
+
+**结论：batch=64 无损空间 ≈ 2~6ms/step，TPOT ~50ms → 44~48ms（约 4~13%），全部来自已提的 GEMM tile 单。** batch=64 正落在 M=17~64 退化平台右边缘，该单在此场景价值最大；batch≥128 时 GEMM 已到脊点（AI≈248），tile 优化无效，瓶颈转移到 Attention。
 
 ## 7. 结论与落地建议
 
