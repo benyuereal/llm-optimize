@@ -429,7 +429,7 @@ vllm::norm_and_quant<...>(out, input, weight, rms, &token_scale, ..., residual);
 **未计入的潜在收益**（已定位、未落地）：
 
 - GEMM M=17~64 tile 优化（§6.9.5 实测 68% → ~78% BW，~1.1x，已提算子优化单）；
-- Attention int4 KV（batch=128 时 20ms → ~10ms，batch=64 时 10ms → ~6ms，无损，未做）。
+- Attention int4 KV（batch=128 时 20ms → ~10ms，但**有损**，不作为选项）。
 
 （Quant/SiLU 融合进 GEMM epilogue 曾列为候选，§6.8.3 已确认 DTK 闭源 kernel 不可行，排除。）
 
@@ -466,11 +466,11 @@ vllm::norm_and_quant<...>(out, input, weight, rms, &token_scale, ..., residual);
 | 项 | 空间 | 说明 |
 |---|---|---|
 | **GEMM M=17~64 tile**（已提单） | **−1.7ms（保守）~ −6.4ms（乐观）** | 保守 = ticket 口径 gate+up 68%→78%（218→192us/层）；乐观 = M=64 全部退化 GEMM 恢复到 M=16 效率（gate+up 218→177、down 133→79、QKV 56→51us，合计 −100us/层 × 64） |
-| **Attention int4 KV** | **−4ms（10→~6ms）** | KV 字节减半（fp8→int4），无损（用户确认）；batch=128 时对应 20→~10ms |
+| Attention | 0 | combine 去不掉（smem 限制）；int4 KV 有损，不作为选项 |
 | Quant/Norm/SiLU | 0 | A/B 融合已生效、接近下限；attn→O 独立 quant 结构性融不掉 |
 | 采样 | 0 | fused 已做（10ms→0.955ms） |
 
-**结论：batch=64 无损空间 ≈ 6~10ms/step，TPOT ~50ms → 40~44ms（约 12~20%）**，两项：GEMM tile（已提单，2~6ms）+ int4 KV（~4ms）。batch=64 正落在 M=17~64 退化平台右边缘，GEMM 单在此场景价值最大；batch≥128 时 GEMM 已到脊点（AI≈248），tile 优化无效，瓶颈转移到 Attention（int4 KV 成为大头）。
+**结论：batch=64 无损空间 ≈ 2~6ms/step，TPOT ~50ms → 44~48ms（约 4~13%），全部来自已提的 GEMM tile 单。** batch=64 正落在 M=17~64 退化平台右边缘，该单在此场景价值最大；batch≥128 时 GEMM 已到脊点（AI≈248），tile 优化无效，瓶颈转移到 Attention（无损手段基本无空间）。
 
 ## 7. 结论与落地建议
 
