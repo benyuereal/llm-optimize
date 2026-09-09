@@ -11,12 +11,7 @@ Qwen3-32B（dense, 64 层, hidden 5120）FP8 量化与性能优化主文档。
 
 | 文件 | 内容 |
 |---|---|
-| [optimization_report.md](qwen3-32b-fp8-rowwise/optimization_report.md) | 主报告：量化配方、GEMM 路径、decode profiling、带宽利用率 vs M、split-K 验证、算子评估（§6.9 为最新实测） |
-| [ticket_fp8_gemm_sla.md](qwen3-32b-fp8-rowwise/ticket_fp8_gemm_sla.md) | 算子优化单（3 板块）：SLA / 当前基线 / Profiling 证据 |
-| [ticket_fp8_gemm_m17_64.md](qwen3-32b-fp8-rowwise/ticket_fp8_gemm_m17_64.md) | 算子优化单（完整版）：环境 / DCU / 驱动 / 软件栈 / 复现 / 实际 / 期望 |
-| [fused_topk_topp.md](qwen3-32b-fp8-rowwise/fused_topk_topp.md) | topk+topp 融合算子（decode 采样 ~10ms 优化项） |
-| [custom_ops_quant_rootcause.md](qwen3-32b-fp8-rowwise/custom_ops_quant_rootcause.md) | 自定义算子量化根因分析 |
-| [w8a16_dead_end.md](qwen3-32b-fp8-rowwise/w8a16_dead_end.md) | W8A16 路线死胡同记录 |
+| [OPTIMIZE.md](qwen3-32b-fp8-rowwise/OPTIMIZE.md) | 主报告：量化配方、W8A16 死路、激活量化根因与修复、DP4 vs TP4、fused topk+topp、DP1 batch 对比、算子流程图、GEMM 带宽利用率 vs M 与 split-K 验证（§6.9 为最新实测） |
 
 ### [qwen3.8-27b-fp8-rowwise/](qwen3.8-27b-fp8-rowwise/)
 
@@ -34,5 +29,5 @@ Qwen3.8-27B（qwen3_5 架构, 64 层, GQA 24:4, head_dim 256）适配实例，�
 - FP8 算力峰值 **447 TFLOPS**，脊点 AI = **248 FLOP/byte**。
 - 带宽利用率随 M 下降：M≤16 ~75-83%（BW-bound），M=128 46.5%（混合区），M=512 23%（compute-bound）。
 - **M=17~64 平台卡在 68%**（M=16 能到 83%，同权重量慢 22%）——kernel tile 配置问题，非算力受限；tile 切换台阶在 M=17 / M=80。
-- 库内 64 个 algo（含 split-K）枚举无改善（M=32/64 1.00x）→ 已提算子优化单（见 ticket 文档）。
+- 库内 64 个 algo（含 split-K）枚举无改善（M=32/64 1.00x）→ 已提算子优化单。
 - 复现脚本：`/workspace/_src/hipblaslt_splitk_probe/`（`bw_real.py` / `ridge_probe.py` / `ab_m64.py`）。
