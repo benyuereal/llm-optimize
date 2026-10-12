@@ -4,15 +4,20 @@
 > lightop / hipblasLt w8a8 的 ~560 TFLOPS 峰值。
 >
 > 我们分三步走,把 8192³ 的算力从 **~200 TFLOPS** 提到主干水平的 **~300 TFLOPS**,
-> 再到当前 **432 TFLOPS**(占参考峰值 77%),最终结果与精确 fp32 参考**逐元素相等**。
+> 再到 **432 TFLOPS**(占参考峰值 77%),最终结果与精确 fp32 参考**逐元素相等**。
+>
+> **最终交付状态**:tilelang-hygon 分支 `feat/hcu-mqa-fp8` 只保留 ③ 的 MLS 算子
+> (纯 DSL 层,与主干**零编译器改动**);① ② 是历史中间版本,脚本仅在本目录留档
+> (② 依赖的 scalar-LDS fp8 C++ 放行已从主分支回退,① ② 脚本现在重跑会编译失败,
+> 仅作过程参考,勿删)。
 >
 > 环境:Hygon DCU **BW1101**,gfx938,64 CU,warp size 64。所有运行用 `HIP_VISIBLE_DEVICES=2`。
 > 脚本在本目录(三个版本 + 诊断都留了,方便回溯每一步改了什么)。
 
-| 阶段 | 路径 | TFLOPS @ 8192³ | 脚本 |
+| 阶段 | 路径 | TFLOPS @ 8192³ | 脚本(本目录) |
 |---|---|---|---|
-| ① 起步 | 手写 async copy channelwise | ~200 | `async_copy_gemm_channelwise.py` |
-| ② 主干水平 | 原生 `T.gemm` fp8 + cp.async(scalar LDS) | ~300 | `native_fp8_channelwise.py` |
+| ① 起步(历史) | 手写 async copy channelwise | ~200 | `async_copy_gemm_channelwise.py` |
+| ② 主干水平(历史) | 原生 `T.gemm` fp8 + cp.async(scalar LDS) | ~300 | `native_fp8_channelwise.py` |
 | ③ 当前 | 原生 `T.gemm` fp8 + **MLS 矩阵 LDS 读** | **432** | `repro_fp8_432.py` |
 
 一键复现当前最优:
@@ -91,9 +96,31 @@ T.copy(C_local, C[...])
 ## 4. ③ 当前:MLS 矩阵 LDS 读,432 TFLOPS
 
 `fp8_mls_channelwise.py` / `repro_fp8_432.py`。
-把 LDS 读从 scalar 切到**硬件矩阵形态**:让 A 和 B **都**走 MLS 生产者
-(`prefer_instruction="matrix_load"`),`T.gemm` 就走 `_gemm_mls_mls` lowering,
-生成 `ds_read_format_tensor_a/b` + MMAC:
+
+**怎么做到 432 的,一句话:不改任何编译器/pass,只在 DSL 层把 A、B 的
+shared→fragment 读从 scalar 散读切到 HCU 硬件矩阵 LDS 读,并配单段异步
+重叠。** 具体是三个动作:
+
+1. **A、B 都用 MLS 生产者加载**:`T.copy(..., prefer_instruction="matrix_load")`
+   走异步 global→LDS 矩阵加载(pipeline pass 自动管理 commit/wait 组);
+2. **`T.gemm` 两个操作数都来自 matrix_load** → 触发主干已有的 `_gemm_mls_mls`
+   lowering,fragment 读发射成 `ds_read_format_tensor_a/b`(硬件
+   `ds_read_m32x32_b8`)——与 hipblaslt 同一条指令链;
+3. **`num_stages=1`**:global 拷贝与 MMAC 单段重叠,256×256×64、512 线程。
+
+```python
+for k in T.Pipelined(K // block_K, num_stages=1):
+    T.copy(A[...], A_shared, prefer_instruction="matrix_load")   # A 走矩阵 LDS
+    T.copy(B[...], B_shared, prefer_instruction="matrix_load")   # B 走矩阵 LDS
+    T.gemm(A_shared, B_shared, C_local, False, True, k_pack=1)   # -> ds_read_format + v_mmac
+for i, j in T.Parallel(block_M, block_N):
+    C_local[i, j] *= scale_a[...] * scale_b[...]
+T.copy(C_local, C[...])
+```
+
+> 注意:`ds_read_format` 只在**两个操作数都来自 matrix_load** 时才发射,
+> 只让一边走 MLS 会退化成 scalar 读——这是 432 与 300 的分界线。
+> 这也是为什么 mqa/paged_mqa 算子里 Q 和 K 都要用 `prefer_instruction="matrix_load"` 加载。
 
 ```python
 for k in T.Pipelined(K // block_K, num_stages=1):
@@ -139,24 +166,41 @@ sweep 脚本:`fp8_mls_channelwise_bench.py`。
   不是 load-vs-MMAC 的重叠,改动已回退。
 - **scalar 路径无脑加线程数**:上限 ~330(寄存器溢出),跨不过去,必须走 ③ 的矩阵 LDS 读。
 
-## 6. 复现注意事项
+## 6. 最终交付状态(tilelang-hygon `feat/hcu-mqa-fp8`)
+
+分支上与主干 origin/main 相比**零编译器改动**(`src/` + `tilelang/` 全目录 diff 为空)。
+fp8 GEMM 只保留一条干净主线:
+
+```
+perf/gemm/fp8_channelwise_mls.py          # 432 算子(默认 256×256×64 ns1 t512)
+perf/gemm/fp8_channelwise_mls_bench.py    # (bm,bn)×ns×threads sweep
+testing/python/hcu/test_hcu_gemm_fp8_mls_channelwise.py  # 正确性 + 断言走 ds_read_format
+```
+
+- ① 阶段曾给 scalar LDS 策略(`src/hcu/utils/gemm_an_bt_lds_strategy.cc`)加过
+  8 行 fp8 dtype 放行;③ 落地后**已回退**(scalar 路径被 432 取代、消费者已删),
+  所以本目录的 ① ② 脚本现在重跑会编译失败——它们是过程留档,不是可运行交付物。
+- mqa / paged_mqa 算子(`perf/mqa/`)保留:内部 gemm 的 Q/K 都走 matrix_load,
+  用的正是 §4 的 MLS 路径,不依赖已回退的 scalar 策略。
+
+## 7. 复现注意事项
 
 - 所有 GPU 运行统一 `HIP_VISIBLE_DEVICES=2`。
-- 三个版本的脚本**全部在 DSL 层,无 C++ 改动**,`tilelang` 装好即可直接跑
-  (本机是 dev build,`import tilelang` 全局可用)。
+- **③ 的脚本全部在 DSL 层,无 C++ 改动**,`tilelang` 装好即可直接跑
+  (本机是 dev build,`import tilelang` 全局可用)。① ② 脚本仅作历史参考(见 §6)。
 - **缓存陷阱**:若改过 tilelang 的 C++,`~/.tilelang/cache/` 的 key 只含 git hash、
   不含未提交的 C++ 改动,须 `rm -rf ~/.tilelang/cache/*` 再跑。纯 Python 改动同理,
   清缓存更保险。
 - 正确性:③ 的结果与精确 fp32 参考逐元素相等(max_rel=0.00e+00);
   注意别用 bf16 做参考(bf16 自身再舍入一次,会看到 ~0.004 的假误差)。
 
-## 7. 交付物索引(本目录)
+## 8. 交付物索引(本目录)
 
 | 文件 | 作用 |
 |---|---|
-| `async_copy_gemm_channelwise.py` | ① 起步版(~200),手写 async + channelwise |
-| `native_fp8_channelwise.py` | ② 主干版(~300),原生 `T.gemm` + scalar LDS |
-| `fp8_mls_channelwise.py` | ③ 当前算子(默认 432 配置),供 import |
+| `async_copy_gemm_channelwise.py` | ① 起步版(~200),手写 async + channelwise(历史留档) |
+| `native_fp8_channelwise.py` | ② 主干版(~300),原生 `T.gemm` + scalar LDS(历史留档) |
+| `fp8_mls_channelwise.py` | ③ 当前算子(默认 432 配置);仓库内已更名 `perf/gemm/fp8_channelwise_mls.py` |
 | `repro_fp8_432.py` | ③ 单文件自包含:编译 + 正确性校验 + 打印 TFLOPS(验证入口) |
-| `fp8_mls_channelwise_bench.py` | ③ 的 (bm,bn)×ns×threads sweep |
+| `fp8_mls_channelwise_bench.py` | ③ 的 (bm,bn)×ns×threads sweep;仓库内 `perf/gemm/fp8_channelwise_mls_bench.py` |
 | `fp8_asm_dump.py` | 导出内核源码,grep 关键指令,用于定位/验证 |
